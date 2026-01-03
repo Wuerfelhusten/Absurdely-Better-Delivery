@@ -114,6 +114,13 @@ namespace AbsurdelyBetterDelivery.Services
             }
 
             AbsurdelyBetterDeliveryMod.DebugLog($"[Repurchase] Found shop: {targetShop.name}");
+            
+            // Pre-check if we can order before touching the UI
+            if (!CanPlaceOrder(targetShop, record))
+            {
+                return false;
+            }
+
             targetShop.SetIsExpanded(true);
 
             // Set item quantities
@@ -346,6 +353,55 @@ namespace AbsurdelyBetterDelivery.Services
         }
 
         /// <summary>
+        /// Pre-checks if an order can be placed without modifying the shop state.
+        /// </summary>
+        private static bool CanPlaceOrder(DeliveryShop shop, DeliveryRecord record)
+        {
+            try
+            {
+                // Check if shop allows ordering at all (basic checks)
+                string reason = "";
+                bool basicCheck = shop.CanOrder(out reason);
+                
+                // If the reason is "Delivery already in progress", that's expected for ASAP orders
+                if (!basicCheck && !string.IsNullOrEmpty(reason) && reason.Contains("Delivery already in progress"))
+                {
+                    return false;
+                }
+                
+                // Check loading dock availability if specified
+                if (shop.LoadingDockDropdown != null && shop.LoadingDockDropdown.options.Count > 0)
+                {
+                    int dockIndex = record.LoadingDockIndex;
+                    bool hasPlaceholder = false;
+
+                    string firstOption = shop.LoadingDockDropdown.options[0].text.Trim().ToLower();
+                    if (firstOption.Contains("select") || firstOption.Contains("-") || string.IsNullOrWhiteSpace(firstOption))
+                    {
+                        hasPlaceholder = true;
+                    }
+
+                    if (hasPlaceholder)
+                    {
+                        dockIndex = record.LoadingDockIndex + 1;
+                    }
+
+                    if (dockIndex < 0 || dockIndex >= shop.LoadingDockDropdown.options.Count)
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                AbsurdelyBetterDeliveryMod.DebugLog($"[Repurchase] Pre-check error: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
         /// Submits the order if possible.
         /// Returns true if order was placed, false otherwise.
         /// </summary>
@@ -368,7 +424,11 @@ namespace AbsurdelyBetterDelivery.Services
             }
             else
             {
-                MelonLogger.Warning($"[Repurchase] Cannot place order: {reason}");
+                // Only log warning if debug mode is on to avoid spamming the console
+                if (AbsurdelyBetterDeliveryMod.EnableDebugMode.Value)
+                {
+                    MelonLogger.Warning($"[Repurchase] Cannot place order: {reason}");
+                }
                 return false;
             }
         }

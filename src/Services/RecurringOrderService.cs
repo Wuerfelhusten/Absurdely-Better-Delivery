@@ -37,7 +37,9 @@ namespace AbsurdelyBetterDelivery.Services
 
         // Cooldown per record to prevent duplicate orders
         private static Dictionary<string, DateTime> _orderCooldowns = new Dictionary<string, DateTime>();
+        private static Dictionary<string, DateTime> _failureCooldowns = new Dictionary<string, DateTime>();
         private static readonly TimeSpan CooldownDuration = TimeSpan.FromMinutes(5);
+        private static readonly TimeSpan FailureCooldownDuration = TimeSpan.FromSeconds(10);
 
         // Current save identifier for persistence
         private static string _currentSaveIdentifier = "Default";
@@ -69,6 +71,7 @@ namespace AbsurdelyBetterDelivery.Services
             _lastCheckedDay = -1;
             _initialized = true;
             _orderCooldowns.Clear();
+            _failureCooldowns.Clear();
             
             LoadRecurringOrders();
             
@@ -147,6 +150,7 @@ namespace AbsurdelyBetterDelivery.Services
             _lastCheckedMinute = -1;
             _lastCheckedDay = -1;
             _orderCooldowns.Clear();
+            _failureCooldowns.Clear();
             AbsurdelyBetterDeliveryMod.DebugLog("[RecurringOrders] Service reset.");
         }
 
@@ -366,6 +370,13 @@ namespace AbsurdelyBetterDelivery.Services
             // Check if any loading dock is available for each destination
             foreach (var record in asapRecords)
             {
+                // Check failure cooldown
+                if (_failureCooldowns.TryGetValue(record.ID, out var lastFailure))
+                {
+                    if (DateTime.Now - lastFailure < FailureCooldownDuration)
+                        continue;
+                }
+
                 // For ASAP, check if there's already an active delivery for this store/destination
                 if (HasActiveDelivery(app, record))
                 {
@@ -519,15 +530,24 @@ namespace AbsurdelyBetterDelivery.Services
 
                     // Set cooldown
                     _orderCooldowns[record.ID] = DateTime.Now;
+                    _failureCooldowns.Remove(record.ID); // Clear failure cooldown on success
                 }
                 else
                 {
-                    MelonLogger.Warning($"[RecurringOrders] ✗ Order for {record.StoreName} failed. Check RepurchaseService logs for details.");
+                    // Set failure cooldown to prevent spamming
+                    _failureCooldowns[record.ID] = DateTime.Now;
+                    
+                    // Only log warning if debug mode is on, otherwise it spams the console
+                    if (AbsurdelyBetterDeliveryMod.EnableDebugMode.Value)
+                    {
+                        MelonLogger.Warning($"[RecurringOrders] ✗ Order for {record.StoreName} failed. Retrying in {FailureCooldownDuration.TotalSeconds}s.");
+                    }
                 }
             }
             catch (Exception ex)
             {
                 MelonLogger.Error($"[RecurringOrders] Error executing order: {ex.Message}");
+                _failureCooldowns[record.ID] = DateTime.Now; // Also cooldown on exception
             }
         }
 

@@ -195,12 +195,13 @@ namespace AbsurdelyBetterDelivery.Multiplayer
                 var gameLobby = Lobby.Instance;
                 if (gameLobby == null || !gameLobby.IsInLobby)
                 {
-                    AbsurdelyBetterDeliveryMod.DebugLog("[SteamP2P] No lobby available for client registration");
+                    // Silent return if no lobby - this runs frequently
                     return;
                 }
                 
                 var localSteamId = SteamUser.GetSteamID();
                 var players = gameLobby.Players;
+                bool newClientAdded = false;
                 
                 if (players != null && players.Length > 0)
                 {
@@ -213,12 +214,16 @@ namespace AbsurdelyBetterDelivery.Multiplayer
                             {
                                 _connectedClients.Add(player);
                                 AbsurdelyBetterDeliveryMod.DebugLog($"[SteamP2P] Registered client from lobby: {player.m_SteamID}");
+                                newClientAdded = true;
                             }
                         }
                     }
                 }
                 
-                AbsurdelyBetterDeliveryMod.DebugLog($"[SteamP2P] Total registered clients: {_connectedClients.Count}");
+                if (newClientAdded)
+                {
+                    AbsurdelyBetterDeliveryMod.DebugLog($"[SteamP2P] Total registered clients: {_connectedClients.Count}");
+                }
             }
             catch (Exception ex)
             {
@@ -391,9 +396,6 @@ namespace AbsurdelyBetterDelivery.Multiplayer
             
             try
             {
-                // Check for P2P session requests and accept them
-                AcceptPendingP2PSessions();
-                
                 uint messageSize;
                 while (SteamNetworking.IsP2PPacketAvailable(out messageSize, MOD_SYNC_CHANNEL))
                 {
@@ -410,40 +412,7 @@ namespace AbsurdelyBetterDelivery.Multiplayer
             }
         }
         
-        /// <summary>
-        /// Accepts pending P2P session requests from other players.
-        /// This is required for Steam P2P to work - the receiver must accept the session.
-        /// </summary>
-        private static void AcceptPendingP2PSessions()
-        {
-            try
-            {
-                // If we're host, accept sessions from all lobby members
-                if (_isHost)
-                {
-                    foreach (var client in _connectedClients)
-                    {
-                        if (client.m_SteamID != 0)
-                        {
-                            SteamNetworking.AcceptP2PSessionWithUser(client);
-                        }
-                    }
-                }
-                else
-                {
-                    // If we're client, accept session from host
-                    if (_hostSteamId.m_SteamID != 0)
-                    {
-                        SteamNetworking.AcceptP2PSessionWithUser(_hostSteamId);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                AbsurdelyBetterDeliveryMod.DebugLog($"[SteamP2P] AcceptP2PSessions error: {ex.Message}");
-            }
-        }
-        
+
         /// <summary>
         /// Receives and processes a P2P message.
         /// </summary>

@@ -194,6 +194,7 @@ namespace AbsurdelyBetterDelivery.Multiplayer
         /// <summary>
         /// Sends a message from client to server via Steam P2P.
         /// </summary>
+        [HideFromIl2Cpp]
         public void SendToServer(NetworkMessage message)
         {
             if (!_isInitialized || _networkManager == null)
@@ -258,6 +259,7 @@ namespace AbsurdelyBetterDelivery.Multiplayer
         /// <summary>
         /// Broadcasts a message from server to all clients via Steam P2P.
         /// </summary>
+        [HideFromIl2Cpp]
         public void BroadcastToClients(NetworkMessage message)
         {
             if (!_isInitialized || _networkManager == null)
@@ -384,6 +386,7 @@ namespace AbsurdelyBetterDelivery.Multiplayer
         /// <summary>
         /// Serializes a NetworkMessage to JSON.
         /// </summary>
+        [HideFromIl2Cpp]
         private string SerializeMessage(NetworkMessage message)
         {
             try
@@ -409,6 +412,7 @@ namespace AbsurdelyBetterDelivery.Multiplayer
         /// Deserializes a NetworkMessage from JSON.
         /// Determines the correct type based on the MessageType property.
         /// </summary>
+        [HideFromIl2Cpp]
         private NetworkMessage? DeserializeMessage(string json)
         {
             try

@@ -92,11 +92,6 @@ namespace AbsurdelyBetterDelivery.Managers
         /// <param name="delivery">The delivery instance to record.</param>
         public static void AddDelivery(DeliveryInstance delivery)
         {
-            if (!AbsurdelyBetterDeliveryMod.EnableHistory.Value)
-            {
-                return;
-            }
-
             var deliveryRecord = new DeliveryRecord
             {
                 ID = delivery.DeliveryID,

@@ -26,7 +26,10 @@ namespace AbsurdelyBetterDelivery.Patches
         public static void Postfix(ListingUI listingUI)
         {
             AbsurdelyBetterDeliveryMod.DebugLog("[Shop] Listing Clicked!");
-            ClassInspector.InspectInstance(listingUI);
+            if (AbsurdelyBetterDeliveryMod.EnableDebugMode.Value)
+            {
+                ClassInspector.InspectInstance(listingUI);
+            }
         }
     }
 }

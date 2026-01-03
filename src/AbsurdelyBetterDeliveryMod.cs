@@ -31,21 +31,12 @@ namespace AbsurdelyBetterDelivery
         /// <summary>Main settings category.</summary>
         public static MelonPreferences_Category MainCategory = null!;
 
-        /// <summary>History-specific settings category.</summary>
-        public static MelonPreferences_Category HistoryCategory = null!;
-
         #endregion
 
         #region Configuration Entries
 
-        /// <summary>Whether to enable delivery history tracking.</summary>
-        public static MelonPreferences_Entry<bool> EnableHistory = null!;
-
         /// <summary>Maximum number of history items to keep.</summary>
         public static MelonPreferences_Entry<int> MaxHistoryItems = null!;
-
-        /// <summary>Whether to enable one-click repurchase (F5).</summary>
-        public static MelonPreferences_Entry<bool> EnableOneClickRepurchase = null!;
 
         /// <summary>Trigger to clear all history (set to true and save).</summary>
         public static MelonPreferences_Entry<bool> ClearHistoryTrigger = null!;
@@ -125,13 +116,13 @@ namespace AbsurdelyBetterDelivery
         /// <inheritdoc/>
         public override void OnSceneWasLoaded(int buildIndex, string sceneName)
         {
-            LoggerInstance.Msg($"Scene loaded: {sceneName} ({buildIndex})");
+            DebugLog($"Scene loaded: {sceneName} ({buildIndex})");
 
             if (sceneName == "Tutorial")
             {
                 // Tutorial scene indicates a fresh save is being created
                 _tutorialSceneLoaded = true;
-                LoggerInstance.Msg("[SaveManager] Tutorial scene detected - marking as fresh save.");
+                DebugLog("[SaveManager] Tutorial scene detected - marking as fresh save.");
             }
             else if (sceneName == "Main")
             {
@@ -159,12 +150,6 @@ namespace AbsurdelyBetterDelivery
 
             // Update recurring order checks
             RecurringOrderService.Update();
-
-            // F5 hotkey for quick repurchase
-            if (Input.GetKeyDown(KeyCode.F5) && EnableOneClickRepurchase.Value)
-            {
-                DeliveryHistoryManager.RepurchaseLastDelivery();
-            }
         }
 
         #endregion
@@ -177,35 +162,17 @@ namespace AbsurdelyBetterDelivery
         private void InitializeConfiguration()
         {
             // Main settings
-            MainCategory = MelonPreferences.CreateCategory("AbsurdelyBetterDelivery_Main", "Main Settings");
+            MainCategory = MelonPreferences.CreateCategory("AbsurdelyBetterDelivery_History", "Main Settings");
             MainCategory.SetFilePath("UserData/AbsurdelyBetterDelivery.cfg");
 
-            EnableOneClickRepurchase = MainCategory.CreateEntry(
-                identifier: "EnableOneClickRepurchase",
-                default_value: true,
-                display_name: "Enable One-Click Re-purchase",
-                description: "Allows re-purchasing items directly from the delivery history."
-            );
-
-            // History settings
-            HistoryCategory = MelonPreferences.CreateCategory("AbsurdelyBetterDelivery_History", "Delivery History");
-            HistoryCategory.SetFilePath("UserData/AbsurdelyBetterDelivery.cfg");
-
-            EnableHistory = HistoryCategory.CreateEntry(
-                identifier: "EnableHistory",
-                default_value: true,
-                display_name: "Enable Delivery History",
-                description: "Keeps track of past deliveries."
-            );
-
-            MaxHistoryItems = HistoryCategory.CreateEntry(
+            MaxHistoryItems = MainCategory.CreateEntry(
                 identifier: "MaxHistoryItems",
                 default_value: 10,
                 display_name: "Max History Items",
                 description: "Maximum number of past deliveries to keep."
             );
 
-            ClearHistoryTrigger = HistoryCategory.CreateEntry(
+            ClearHistoryTrigger = MainCategory.CreateEntry(
                 identifier: "ClearData",
                 default_value: false,
                 display_name: "Remove Data",
@@ -218,14 +185,14 @@ namespace AbsurdelyBetterDelivery
                 UpdateClearDataButtonText();
             });
 
-            DeliveryTimeMultiplier = HistoryCategory.CreateEntry(
+            DeliveryTimeMultiplier = MainCategory.CreateEntry(
                 identifier: "DeliveryTimeMultiplier",
                 default_value: 1.0f,
                 display_name: "Delivery Time Multiplier",
                 description: "Adjust delivery speed. 0.5 = 2x faster, 2.0 = 2x slower. Range: 0.01 to 2.0"
             );
 
-            EnableDebugMode = HistoryCategory.CreateEntry(
+            EnableDebugMode = MainCategory.CreateEntry(
                 identifier: "EnableDebugMode",
                 default_value: false,
                 display_name: "Enable Debug Mode",
@@ -266,7 +233,7 @@ namespace AbsurdelyBetterDelivery
                 }
             });
 
-            LoggerInstance.Msg("Configuration loaded.");
+            DebugLog("Configuration loaded.");
         }
 
         /// <summary>
@@ -288,7 +255,7 @@ namespace AbsurdelyBetterDelivery
                 phoneEvent?.AddEventHandler(null, handler);
                 menuEvent?.AddEventHandler(null, handler);
 
-                LoggerInstance.Msg("Subscribed to Mod Manager events.");
+                DebugLog("Subscribed to Mod Manager events.");
             }
             catch (Exception ex)
             {
@@ -301,20 +268,20 @@ namespace AbsurdelyBetterDelivery
         /// </summary>
         private void HandleSettingsUpdate()
         {
-            LoggerInstance.Msg($"HandleSettingsUpdate called. ClearHistoryTrigger.Value = {ClearHistoryTrigger.Value}");
+            DebugLog($"HandleSettingsUpdate called. ClearHistoryTrigger.Value = {ClearHistoryTrigger.Value}");
             
             if (!ClearHistoryTrigger.Value) return;
 
             if (_isInSaveGame)
             {
                 // In save game: Clear only current save's data
-                LoggerInstance.Msg($"Clear Data triggered for save: {_currentSaveIdentifier}");
+                DebugLog($"Clear Data triggered for save: {_currentSaveIdentifier}");
                 ClearCurrentSaveData();
             }
             else
             {
                 // In menu: Clear all data from all saves
-                LoggerInstance.Msg("Remove All Data triggered! Clearing data from all saves...");
+                DebugLog("Remove All Data triggered! Clearing data from all saves...");
                 ClearAllData();
             }
 
@@ -329,7 +296,7 @@ namespace AbsurdelyBetterDelivery
                 DeliveryHistoryUI.RefreshHistoryUI(DeliveryAppInstance);
             }
 
-            LoggerInstance.Msg("Data removal complete.");
+            DebugLog("Data removal complete.");
         }
 
         /// <summary>
@@ -348,7 +315,7 @@ namespace AbsurdelyBetterDelivery
                 if (refreshMethod != null)
                 {
                     refreshMethod.Invoke(null, null);
-                    LoggerInstance.Msg("Mod Manager UI refresh triggered.");
+                    DebugLog("Mod Manager UI refresh triggered.");
                 }
             }
             catch (Exception ex)
@@ -369,18 +336,15 @@ namespace AbsurdelyBetterDelivery
             var saveManager = UnityEngine.Object.FindObjectOfType<SaveManager>();
             if (saveManager == null) return;
 
-            // Debug: Re-check SaveManager for correct path/name
-            AbsurdelyBetterDelivery.Utils.SaveManagerInspector.InspectSaveManager();
-
             string saveName = saveManager.SaveName;
             string containerPath = saveManager.IndividualSavesContainerPath;
             
             // Try to find the actual save slot by checking which SaveGame_ folder has recent activity
             string actualSaveSlot = TryFindActiveSaveSlot(containerPath);
             
-            LoggerInstance.Msg($"[SaveManager] SaveName: {saveName}");
-            LoggerInstance.Msg($"[SaveManager] ContainerPath: {containerPath}");
-            LoggerInstance.Msg($"[SaveManager] Detected SaveSlot: {actualSaveSlot}");
+            DebugLog($"[SaveManager] SaveName: {saveName}");
+            DebugLog($"[SaveManager] ContainerPath: {containerPath}");
+            DebugLog($"[SaveManager] Detected SaveSlot: {actualSaveSlot}");
 
             // Use the save slot name if found, otherwise fall back to SaveName
             string identifier = !string.IsNullOrEmpty(actualSaveSlot) ? actualSaveSlot : saveName;
@@ -388,11 +352,11 @@ namespace AbsurdelyBetterDelivery
             
             // Check if this is a fresh save (tutorial was just played)
             bool isFreshSave = _tutorialSceneLoaded;
-            LoggerInstance.Msg($"[SaveManager] Is Fresh Save: {isFreshSave}");
+            DebugLog($"[SaveManager] Is Fresh Save: {isFreshSave}");
             
             if (isFreshSave)
             {
-                LoggerInstance.Msg($"[SaveManager] Fresh save detected - clearing old data for slot: {identifier}");
+                DebugLog($"[SaveManager] Fresh save detected - clearing old data for slot: {identifier}");
                 ClearCurrentSaveData();
                 _tutorialSceneLoaded = false; // Reset flag after cleaning
             }
@@ -431,7 +395,7 @@ namespace AbsurdelyBetterDelivery
 
                 if (mostRecent != null)
                 {
-                    LoggerInstance.Msg($"[SaveManager] Found recent save folder: {mostRecent.Name} (LastWriteTime: {mostRecent.LastWriteTime})");
+                    DebugLog($"[SaveManager] Found recent save folder: {mostRecent.Name} (LastWriteTime: {mostRecent.LastWriteTime})");
                     return mostRecent.Name;
                 }
             }
@@ -474,7 +438,7 @@ namespace AbsurdelyBetterDelivery
         /// </summary>
         private void ClearCurrentSaveData()
         {
-            LoggerInstance.Msg($"[DataManagement] Clearing data for save: {_currentSaveIdentifier}");
+            DebugLog($"[DataManagement] Clearing data for save: {_currentSaveIdentifier}");
 
             // Clear history
             DeliveryHistoryManager.ClearHistory();
@@ -484,10 +448,10 @@ namespace AbsurdelyBetterDelivery
             if (File.Exists(recurringPath))
             {
                 File.Delete(recurringPath);
-                LoggerInstance.Msg($"[DataManagement] Deleted: {recurringPath}");
+                DebugLog($"[DataManagement] Deleted: {recurringPath}");
             }
 
-            LoggerInstance.Msg($"[DataManagement] Data cleared for save: {_currentSaveIdentifier}");
+            DebugLog($"[DataManagement] Data cleared for save: {_currentSaveIdentifier}");
             
             // Broadcast clear data to clients if we're the host
             if (Multiplayer.MultiplayerManager.IsHost)
@@ -501,7 +465,7 @@ namespace AbsurdelyBetterDelivery
         /// </summary>
         private void ClearAllData()
         {
-            LoggerInstance.Msg("[DataManagement] Clearing ALL data from ALL saves...");
+            DebugLog("[DataManagement] Clearing ALL data from ALL saves...");
 
             try
             {
@@ -577,7 +541,7 @@ namespace AbsurdelyBetterDelivery
         private void LogIconStatus(string name, Sprite? sprite)
         {
             if (sprite != null)
-                LoggerInstance.Msg($"Loaded embedded {name} icon");
+                DebugLog($"Loaded embedded {name} icon");
             else
                 LoggerInstance.Warning($"Failed to load embedded {name} icon");
         }
@@ -612,7 +576,7 @@ namespace AbsurdelyBetterDelivery
 
                 if (tex.LoadImage(il2cppData))
                 {
-                    LoggerInstance.Msg($"Loaded texture {resourceName}: {tex.width}x{tex.height}");
+                    DebugLog($"Loaded texture {resourceName}: {tex.width}x{tex.height}");
 
                     var sprite = Sprite.Create(
                         tex,

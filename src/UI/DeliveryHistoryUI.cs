@@ -5,11 +5,13 @@
 // =============================================================================
 
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using AbsurdelyBetterDelivery.Models;
 using Il2CppScheduleOne.Delivery;
 using Il2CppScheduleOne.UI.Phone.Delivery;
+using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using MelonLoader;
 using UnityEngine;
 using UnityEngine.UI;
@@ -55,8 +57,16 @@ namespace AbsurdelyBetterDelivery.UI
             // Debug log removed to reduce spam - this is called very frequently
             _activeDeliveryCards.Clear();
             
-            // Save scroll position before refresh
-            float savedScrollPosition = _deliveriesScrollRect?.verticalNormalizedPosition ?? 1f;
+            // Save scroll position before refresh from the correct ScrollRect
+            float savedScrollPosition = 1f;
+            if (_deliveriesScrollRect != null)
+            {
+                savedScrollPosition = _deliveriesScrollRect.verticalNormalizedPosition;
+            }
+            else if (app.MainScrollRect != null)
+            {
+                savedScrollPosition = app.MainScrollRect.verticalNormalizedPosition;
+            }
 
             // Validate required components
             if (!ValidateAppComponents(app, out var statusContainer, out var containerParent))
@@ -109,11 +119,8 @@ namespace AbsurdelyBetterDelivery.UI
             // Force layout rebuild
             RebuildLayout(statusContainer);
             
-            // Restore scroll position after rebuild
-            if (_deliveriesScrollRect != null)
-            {
-                _deliveriesScrollRect.verticalNormalizedPosition = savedScrollPosition;
-            }
+            // Restore scroll position after rebuild with delay to ensure layout is complete
+            MelonCoroutines.Start(RestoreScrollPositionAfterFrame(savedScrollPosition, app));
         }
 
         /// <summary>
@@ -524,6 +531,25 @@ namespace AbsurdelyBetterDelivery.UI
             if (_deliveriesScrollRect?.content != null)
             {
                 LayoutRebuilder.ForceRebuildLayoutImmediate(_deliveriesScrollRect.content);
+            }
+        }
+
+        /// <summary>
+        /// Coroutine to restore scroll position after layout is complete.
+        /// </summary>
+        private static System.Collections.IEnumerator RestoreScrollPositionAfterFrame(float position, DeliveryApp app)
+        {
+            // Wait one frame for layout to complete
+            yield return null;
+            
+            // Restore position
+            if (_deliveriesScrollRect != null)
+            {
+                _deliveriesScrollRect.verticalNormalizedPosition = position;
+            }
+            else if (app.MainScrollRect != null)
+            {
+                app.MainScrollRect.verticalNormalizedPosition = position;
             }
         }
 
