@@ -7,10 +7,10 @@ using MelonLoader;
 
 [assembly: AssemblyTitle("Absurdely Better Delivery")]
 [assembly: AssemblyDescription("Improves the delivery system in Schedule I")]
-[assembly: AssemblyCompany("YourName")]
+[assembly: AssemblyCompany("Modding Forge")]
 [assembly: AssemblyProduct("Absurdely Better Delivery")]
-[assembly: AssemblyCopyright("Copyright © 2026")]
+[assembly: AssemblyCopyright("Copyright (c) 2026 Modding Forge")]
 [assembly: AssemblyFileVersion("1.0.0")]
-[assembly: MelonInfo(typeof(AbsurdelyBetterDeliveryMod), "Absurdely Better Delivery", "1.0.0", "YourName", null)]
+[assembly: MelonInfo(typeof(AbsurdelyBetterDeliveryMod), "Absurdely Better Delivery", "1.0.0", "Modding Forge", null)]
 [assembly: MelonGame("TVGS", "Schedule I")]
 [assembly: AssemblyVersion("1.0.0.0")]

@@ -11,6 +11,9 @@
     <RootNamespace>AbsurdelyBetterDelivery</RootNamespace>
     <AssemblyName>AbsurdelyBetterDelivery</AssemblyName>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <Company>Modding Forge</Company>
+    <Authors>Modding Forge</Authors>
+    <Copyright>Copyright (c) 2026 Modding Forge</Copyright>
   </PropertyGroup>
 
   <ItemGroup>
