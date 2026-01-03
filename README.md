@@ -1,7 +1,5 @@
 # Absurdely Better Delivery - Developer Documentation
 
-> **Note for Users**: If you are looking for installation and usage instructions, please see [README_USER.md](README_USER.md).
-
 ## Project Overview
 
 **Absurdely Better Delivery** is a MelonLoader mod for *Schedule I* that injects a robust delivery management system into the game. It leverages Harmony for runtime patching and Il2CppInterop for Unity engine interaction.
