@@ -23,13 +23,14 @@ namespace AbsurdelyBetterDelivery.Patches
         /// Also applies delivery time multiplier to new deliveries.
         /// </summary>
         /// <param name="__instance">The DeliveryApp instance.</param>
+        /// <param name="instance">The delivery instance created by the game.</param>
         [HarmonyPostfix]
-        public static void Postfix(DeliveryApp __instance)
+        public static void Postfix(DeliveryApp __instance, Il2CppScheduleOne.Delivery.DeliveryInstance instance)
         {
             AbsurdelyBetterDeliveryMod.DebugLog("[Patch] CreateDeliveryStatusDisplay called!");
 
-            // Apply delivery time multiplier to the newest delivery
-            ApplyDeliveryTimeMultiplier(__instance);
+            // Apply delivery time multiplier to the exact delivery that was just created.
+            ApplyDeliveryTimeMultiplier(instance);
 
             // Hide all vanilla status displays
             if (__instance.statusDisplays != null)
@@ -48,9 +49,9 @@ namespace AbsurdelyBetterDelivery.Patches
         }
 
         /// <summary>
-        /// Applies the delivery time multiplier to the most recent delivery.
+        /// Applies the delivery time multiplier to a specific delivery instance.
         /// </summary>
-        private static void ApplyDeliveryTimeMultiplier(DeliveryApp app)
+        private static void ApplyDeliveryTimeMultiplier(Il2CppScheduleOne.Delivery.DeliveryInstance delivery)
         {
             try
             {
@@ -62,13 +63,11 @@ namespace AbsurdelyBetterDelivery.Patches
                     return;
                 }
 
-                // Get the most recent delivery (last in list)
-                if (app.statusDisplays == null || app.statusDisplays.Count == 0) return;
+                if (delivery == null)
+                {
+                    return;
+                }
 
-                var latestDisplay = app.statusDisplays[app.statusDisplays.Count - 1];
-                if (latestDisplay?.DeliveryInstance == null) return;
-
-                var delivery = latestDisplay.DeliveryInstance;
                 int originalTime = delivery.TimeUntilArrival;
 
                 // Apply multiplier to delivery time

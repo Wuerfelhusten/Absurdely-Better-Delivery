@@ -38,8 +38,11 @@ namespace AbsurdelyBetterDelivery.Services
         // Cooldown per record to prevent duplicate orders
         private static Dictionary<string, DateTime> _orderCooldowns = new Dictionary<string, DateTime>();
         private static Dictionary<string, DateTime> _failureCooldowns = new Dictionary<string, DateTime>();
+        private static HashSet<string> _failureCooldownLogged = new HashSet<string>();
+        private static HashSet<string> _activeDeliveryBlockLogged = new HashSet<string>();
         private static readonly TimeSpan CooldownDuration = TimeSpan.FromMinutes(5);
         private static readonly TimeSpan FailureCooldownDuration = TimeSpan.FromSeconds(10);
+        private static int _lastAsapCandidateCount = -1;
 
         // Current save identifier for persistence
         private static string _currentSaveIdentifier = "Default";
@@ -72,6 +75,9 @@ namespace AbsurdelyBetterDelivery.Services
             _initialized = true;
             _orderCooldowns.Clear();
             _failureCooldowns.Clear();
+            _failureCooldownLogged.Clear();
+            _activeDeliveryBlockLogged.Clear();
+            _lastAsapCandidateCount = -1;
             
             LoadRecurringOrders();
             
@@ -151,6 +157,9 @@ namespace AbsurdelyBetterDelivery.Services
             _lastCheckedDay = -1;
             _orderCooldowns.Clear();
             _failureCooldowns.Clear();
+            _failureCooldownLogged.Clear();
+            _activeDeliveryBlockLogged.Clear();
+            _lastAsapCandidateCount = -1;
             AbsurdelyBetterDeliveryMod.DebugLog("[RecurringOrders] Service reset.");
         }
 
@@ -364,6 +373,12 @@ namespace AbsurdelyBetterDelivery.Services
 
             if (asapRecords.Count == 0) return;
 
+            if (asapRecords.Count != _lastAsapCandidateCount)
+            {
+                AbsurdelyBetterDeliveryMod.DebugLog($"[RecurringOrders] ASAP scan found {asapRecords.Count} candidate(s).");
+                _lastAsapCandidateCount = asapRecords.Count;
+            }
+
             var app = GetDeliveryApp();
             if (app == null) return;
 
@@ -374,19 +389,52 @@ namespace AbsurdelyBetterDelivery.Services
                 if (_failureCooldowns.TryGetValue(record.ID, out var lastFailure))
                 {
                     if (DateTime.Now - lastFailure < FailureCooldownDuration)
+                    {
+                        if (!_failureCooldownLogged.Contains(record.ID))
+                        {
+                            AbsurdelyBetterDeliveryMod.DebugLog(
+                                $"[RecurringOrders] ASAP skip '{record.StoreName}' (ID={record.ID}) due to failure cooldown ({FailureCooldownDuration.TotalSeconds:F0}s).");
+                            _failureCooldownLogged.Add(record.ID);
+                        }
                         continue;
+                    }
+
+                    if (_failureCooldownLogged.Contains(record.ID))
+                    {
+                        AbsurdelyBetterDeliveryMod.DebugLog(
+                            $"[RecurringOrders] Failure cooldown ended for '{record.StoreName}' (ID={record.ID}), retrying.");
+                        _failureCooldownLogged.Remove(record.ID);
+                    }
                 }
 
                 // For ASAP, check if there's already an active delivery for this store/destination
                 if (HasActiveDelivery(app, record))
                 {
+                    if (!_activeDeliveryBlockLogged.Contains(record.ID))
+                    {
+                        AbsurdelyBetterDeliveryMod.DebugLog(
+                            $"[RecurringOrders] ASAP skip '{record.StoreName}' (ID={record.ID}) because active delivery is blocking destination={record.Destination}, dock={record.LoadingDockIndex + 1}.");
+                        _activeDeliveryBlockLogged.Add(record.ID);
+                    }
                     continue; // Skip if already delivering
+                }
+
+                if (_activeDeliveryBlockLogged.Contains(record.ID))
+                {
+                    AbsurdelyBetterDeliveryMod.DebugLog(
+                        $"[RecurringOrders] Active delivery block ended for '{record.StoreName}' (ID={record.ID}).");
+                    _activeDeliveryBlockLogged.Remove(record.ID);
                 }
 
                 // Check if we can place an order
                 if (CanPlaceOrder(record))
                 {
                     ExecuteRecurringOrder(record);
+                }
+                else
+                {
+                    AbsurdelyBetterDeliveryMod.DebugLog(
+                        $"[RecurringOrders] ASAP skip '{record.StoreName}' (ID={record.ID}) because CanPlaceOrder returned false.");
                 }
             }
         }
@@ -398,60 +446,42 @@ namespace AbsurdelyBetterDelivery.Services
         {
             try
             {
-                // Check if there's an active delivery using the SAME loading dock
+                // Check if there's an active delivery using the same destination/loading dock pair.
                 if (app.statusDisplays != null && app.statusDisplays.Count > 0)
                 {
-                    int blockingCount = 0;
+                    string recordDestination = record.Destination ?? string.Empty;
+                    string recordDestinationNormalized = NormalizeForMatch(recordDestination);
+                    int recordDockIndex = record.LoadingDockIndex;
                     
                     foreach (var display in app.statusDisplays)
                     {
                         try
                         {
-                            // Get the destination/loading dock info from the delivery
-                            var type = display.GetType();
-                            
-                            // Try to get loading dock index or destination property
-                            int? displayDockIndex = null;
-                            string? displayDestination = null;
-                            
-                            // Check for loadingDockIndex field/property
-                            var dockIndexField = type.GetField("loadingDockIndex");
-                            if (dockIndexField != null)
+                            if (display == null || display.DeliveryInstance == null)
                             {
-                                var value = dockIndexField.GetValue(display);
-                                if (value != null)
-                                {
-                                    displayDockIndex = Convert.ToInt32(value);
-                                }
+                                continue;
                             }
-                            
-                            // Check for destination property
-                            var destProp = type.GetProperty("Destination");
-                            if (destProp != null)
+
+                            var delivery = display.DeliveryInstance;
+                            string activeDestination = delivery.DestinationCode ?? string.Empty;
+                            string activeDestinationNormalized = NormalizeForMatch(activeDestination);
+                            int activeDockIndex = delivery.LoadingDockIndex;
+
+                            bool sameDestination =
+                                !string.IsNullOrEmpty(recordDestinationNormalized) &&
+                                activeDestinationNormalized.Equals(recordDestinationNormalized, StringComparison.OrdinalIgnoreCase);
+
+                            bool sameDock = activeDockIndex == recordDockIndex;
+
+                            if (sameDestination && sameDock)
                             {
-                                displayDestination = destProp.GetValue(display)?.ToString();
-                            }
-                            
-                            // Compare with our record
-                            bool sameDock = displayDockIndex.HasValue && displayDockIndex.Value == record.LoadingDockIndex;
-                            bool sameDest = !string.IsNullOrEmpty(displayDestination) && 
-                                          !string.IsNullOrEmpty(record.Destination) &&
-                                          displayDestination.Replace(" ", "").Equals(record.Destination.Replace(" ", ""), StringComparison.OrdinalIgnoreCase);
-                            
-                            if (sameDock || sameDest)
-                            {
-                                blockingCount++;
+                                return true;
                             }
                         }
                         catch (Exception ex)
                         {
                             AbsurdelyBetterDeliveryMod.DebugLog($"[RecurringOrders]   Error inspecting delivery: {ex.Message}");
                         }
-                    }
-                    
-                    if (blockingCount > 0)
-                    {
-                        return true;
                     }
                 }
                 
@@ -473,6 +503,8 @@ namespace AbsurdelyBetterDelivery.Services
             var app = GetDeliveryApp();
             if (app == null)
             {
+                AbsurdelyBetterDeliveryMod.DebugLog(
+                    $"[RecurringOrders] CanPlaceOrder: DeliveryApp unavailable for '{record.StoreName}' (ID={record.ID}).");
                 return false;
             }
 
@@ -489,8 +521,13 @@ namespace AbsurdelyBetterDelivery.Services
 
                     // For ASAP, we just need to be able to order - don't check CanOrder as that requires items in cart
                     // Just return true and let RepurchaseService handle it
+                    AbsurdelyBetterDeliveryMod.DebugLog(
+                        $"[RecurringOrders] CanPlaceOrder: found matching shop '{shopName}' for '{record.StoreName}' (ID={record.ID}).");
                     return true;
                 }
+
+                AbsurdelyBetterDeliveryMod.DebugLog(
+                    $"[RecurringOrders] CanPlaceOrder: no matching shop found for '{record.StoreName}' (ID={record.ID}).");
             }
             catch (Exception ex)
             {
@@ -514,6 +551,9 @@ namespace AbsurdelyBetterDelivery.Services
 
             try
             {
+                AbsurdelyBetterDeliveryMod.DebugLog(
+                    $"[RecurringOrders] Executing record ID={record.ID}, store={record.StoreName}, destination={record.Destination}, dock={record.LoadingDockIndex + 1}, items={record.Items.Count}");
+
                 // Use the existing repurchase service - it returns true if order was placed
                 bool success = RepurchaseService.RepurchaseRecord(record, app);
 
@@ -540,7 +580,7 @@ namespace AbsurdelyBetterDelivery.Services
                     // Only log warning if debug mode is on, otherwise it spams the console
                     if (AbsurdelyBetterDeliveryMod.EnableDebugMode.Value)
                     {
-                        MelonLogger.Warning($"[RecurringOrders] ✗ Order for {record.StoreName} failed. Retrying in {FailureCooldownDuration.TotalSeconds}s.");
+                        MelonLogger.Warning($"[RecurringOrders] ✗ Order for {record.StoreName} (ID={record.ID}, destination={record.Destination}, dock={record.LoadingDockIndex + 1}) failed. Retrying in {FailureCooldownDuration.TotalSeconds}s.");
                     }
                 }
             }
@@ -579,6 +619,28 @@ namespace AbsurdelyBetterDelivery.Services
             }
 
             return app;
+        }
+
+        /// <summary>
+        /// Normalizes text for robust matching (case-insensitive, alphanumeric only).
+        /// </summary>
+        private static string NormalizeForMatch(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return string.Empty;
+            }
+
+            var buffer = new System.Text.StringBuilder(value.Length);
+            foreach (char c in value)
+            {
+                if (char.IsLetterOrDigit(c))
+                {
+                    buffer.Append(char.ToLowerInvariant(c));
+                }
+            }
+
+            return buffer.ToString();
         }
 
         #endregion

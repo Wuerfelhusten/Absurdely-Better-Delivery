@@ -122,7 +122,7 @@
   </ItemGroup>
 
   <Target Name="PostBuild" AfterTargets="PostBuildEvent">
-    <Copy SourceFiles="$(TargetPath)" DestinationFolder="C:\Users\wuerf\AppData\Roaming\Vortex\schedule1\mods\Absurdely Better Delivery\mods" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="C:\Users\wuerf\AppData\Roaming\Vortex\schedule1\mods\Absurdely Better Delivery-1418-v1-0-1767468849\mods" />
     <Message Text="Copied $(TargetFileName) to Mods folder" Importance="high" />
   </Target>
 

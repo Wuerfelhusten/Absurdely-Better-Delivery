@@ -5,9 +5,12 @@
 // =============================================================================
 
 using System;
+using System.Text;
 using AbsurdelyBetterDelivery.Models;
 using AbsurdelyBetterDelivery.Multiplayer;
 using AbsurdelyBetterDelivery.Utils;
+using Il2CppScheduleOne.Delivery;
+using Il2CppScheduleOne.Property;
 using Il2CppScheduleOne.UI.Phone.Delivery;
 using MelonLoader;
 using UnityEngine;
@@ -105,6 +108,9 @@ namespace AbsurdelyBetterDelivery.Services
         /// </summary>
         private static bool ExecuteRepurchase(DeliveryRecord record, DeliveryApp app)
         {
+            AbsurdelyBetterDeliveryMod.DebugLog(
+                $"[Repurchase] Record details: ID={record.ID}, store={record.StoreName}, destination={record.Destination}, dock={record.LoadingDockIndex + 1}, items={record.Items.Count}");
+
             // Find the matching shop
             var targetShop = FindShop(record.StoreName, app);
             if (targetShop == null)
@@ -114,25 +120,26 @@ namespace AbsurdelyBetterDelivery.Services
             }
 
             AbsurdelyBetterDeliveryMod.DebugLog($"[Repurchase] Found shop: {targetShop.name}");
-            
-            // Pre-check if we can order before touching the UI
-            if (!CanPlaceOrder(targetShop, record))
+
+            targetShop.SetIsExpanded(true);
+
+            // Set destination and dock before quantity/order checks.
+            // This avoids false negatives when destination-specific dock options differ.
+            if (!SetDestination(targetShop, record))
             {
+                MelonLogger.Warning($"[Repurchase] Aborting order for '{record.StoreName}': destination '{record.Destination}' could not be resolved.");
                 return false;
             }
 
-            targetShop.SetIsExpanded(true);
+            SetLoadingDock(targetShop, record);
 
             // Set item quantities
             int itemsFound = SetItemQuantities(record, targetShop);
             if (itemsFound == 0)
             {
+                MelonLogger.Warning($"[Repurchase] No matching items found for '{record.StoreName}'.");
                 return false;
             }
-
-            // Set destination and loading dock
-            SetDestination(targetShop, record);
-            SetLoadingDock(targetShop, record);
 
             // Submit order and return success status
             return SubmitOrder(targetShop, app, record.StoreName);
@@ -226,26 +233,51 @@ namespace AbsurdelyBetterDelivery.Services
         /// <summary>
         /// Sets the destination dropdown.
         /// </summary>
-        private static void SetDestination(DeliveryShop shop, DeliveryRecord record)
+        private static bool SetDestination(DeliveryShop shop, DeliveryRecord record)
         {
             if (shop.DestinationDropdown == null || shop.DestinationDropdown.options.Count == 0)
             {
-                return;
+                return true;
             }
 
-            int selectedIndex = 0;
+            if (AbsurdelyBetterDeliveryMod.EnableDebugMode.Value)
+            {
+                var optionTexts = new System.Collections.Generic.List<string>();
+                foreach (var option in shop.DestinationDropdown.options)
+                {
+                    optionTexts.Add(option.text);
+                }
+
+                AbsurdelyBetterDeliveryMod.DebugLog(
+                    $"[Repurchase] Destination setup for '{record.StoreName}': requested='{record.Destination}', dropdownOptions=[{string.Join(", ", optionTexts)}]");
+            }
+
+            int selectedIndex = shop.DestinationDropdown.value;
+            if (selectedIndex < 0 || selectedIndex >= shop.DestinationDropdown.options.Count)
+            {
+                selectedIndex = 0;
+            }
+
             bool found = false;
 
             if (!string.IsNullOrEmpty(record.Destination))
             {
                 string destTrimmed = record.Destination.Trim();
-                string destNormalized = destTrimmed.Replace(" ", "").ToLowerInvariant();
+                string destNormalized = NormalizeForMatch(destTrimmed);
 
-                for (int i = 0; i < shop.DestinationDropdown.options.Count; i++)
+                if (TryResolveDropdownIndexFromDestinationCode(shop, record.Destination, out int resolvedByCodeIndex))
+                {
+                    selectedIndex = resolvedByCodeIndex;
+                    found = true;
+                    AbsurdelyBetterDeliveryMod.DebugLog(
+                        $"[Repurchase] Destination code resolved '{record.Destination}' to dropdown '{shop.DestinationDropdown.options[selectedIndex].text}' (index {selectedIndex}).");
+                }
+
+                for (int i = 0; i < shop.DestinationDropdown.options.Count && !found; i++)
                 {
                     var option = shop.DestinationDropdown.options[i];
                     string optionText = option.text.Trim();
-                    string optionNormalized = optionText.Replace(" ", "").ToLowerInvariant();
+                    string optionNormalized = NormalizeForMatch(optionText);
 
                     if (optionText.Equals(destTrimmed, StringComparison.OrdinalIgnoreCase) ||
                         optionNormalized.Equals(destNormalized, StringComparison.OrdinalIgnoreCase))
@@ -257,36 +289,170 @@ namespace AbsurdelyBetterDelivery.Services
                 }
             }
 
-            // Default to second option if not found (first is usually placeholder)
-            if (!found && shop.DestinationDropdown.options.Count > 1)
+            if (!found && !string.IsNullOrWhiteSpace(record.Destination))
             {
-                selectedIndex = 1;
+                var optionTexts = new System.Collections.Generic.List<string>();
+                foreach (var option in shop.DestinationDropdown.options)
+                {
+                    optionTexts.Add(option.text);
+                }
+
+                var options = string.Join(", ", optionTexts);
+                MelonLogger.Warning($"[Repurchase] Destination '{record.Destination}' not found in dropdown options for '{record.StoreName}'. Options: [{options}]");
+                return false;
+            }
+
+            if (selectedIndex < 0 || selectedIndex >= shop.DestinationDropdown.options.Count)
+            {
+                MelonLogger.Warning(
+                    $"[Repurchase] Resolved destination index {selectedIndex} is out of range for '{record.StoreName}'. Dropdown count={shop.DestinationDropdown.options.Count}.");
+                return false;
             }
 
             shop.DestinationDropdown.value = selectedIndex;
             shop.DestinationDropdownSelected(selectedIndex);
+            AbsurdelyBetterDeliveryMod.DebugLog(
+                $"[Repurchase] Destination dropdown selected index={selectedIndex}, text='{shop.DestinationDropdown.options[selectedIndex].text}', requested='{record.Destination}'");
 
             // Try to set the destination property
-            SetDestinationProperty(shop, selectedIndex);
+            bool destinationPropertySet = SetDestinationProperty(shop, selectedIndex, record.Destination);
+            if (!destinationPropertySet && !string.IsNullOrWhiteSpace(record.Destination))
+            {
+                MelonLogger.Warning($"[Repurchase] Destination property could not be mapped for '{record.StoreName}' ({record.Destination}).");
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Tries to resolve the destination dropdown index by matching the stored destination code
+        /// (for example "manor") to the shop's potential destination metadata and then to a dropdown label
+        /// (for example "Hyland Manor").
+        /// </summary>
+        private static bool TryResolveDropdownIndexFromDestinationCode(DeliveryShop shop, string destinationCode, out int dropdownIndex)
+        {
+            dropdownIndex = -1;
+
+            try
+            {
+                var potentialDestinations = shop.GetPotentialDestinations();
+                if (potentialDestinations == null)
+                {
+                    return false;
+                }
+
+                string destinationCodeNormalized = NormalizeForMatch(destinationCode);
+
+                for (int i = 0; i < potentialDestinations.Count; i++)
+                {
+                    var dest = potentialDestinations[i];
+                    string propertyCode = string.Empty;
+                    string propertyName = string.Empty;
+
+                    var codeProp = dest.GetType().GetProperty("PropertyCode");
+                    if (codeProp != null)
+                    {
+                        var codeValue = codeProp.GetValue(dest);
+                        if (codeValue != null)
+                        {
+                            propertyCode = codeValue.ToString() ?? string.Empty;
+                        }
+                    }
+
+                    var nameProp = dest.GetType().GetProperty("PropertyName")
+                        ?? dest.GetType().GetProperty("Name");
+                    if (nameProp != null)
+                    {
+                        var nameValue = nameProp.GetValue(dest);
+                        if (nameValue != null)
+                        {
+                            propertyName = nameValue.ToString() ?? string.Empty;
+                        }
+                    }
+
+                    string propertyCodeNormalized = NormalizeForMatch(propertyCode);
+                    string propertyNameNormalized = NormalizeForMatch(propertyName);
+
+                    if (propertyCodeNormalized.Equals(destinationCodeNormalized, StringComparison.OrdinalIgnoreCase) ||
+                        propertyNameNormalized.Equals(destinationCodeNormalized, StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Preferred: resolve by dropdown option text (works even when options are dynamically filtered/reordered).
+                        if (!string.IsNullOrEmpty(propertyNameNormalized))
+                        {
+                            for (int optionIndex = 0; optionIndex < shop.DestinationDropdown.options.Count; optionIndex++)
+                            {
+                                string optionNormalized = NormalizeForMatch(shop.DestinationDropdown.options[optionIndex].text);
+                                if (optionNormalized.Equals(propertyNameNormalized, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    dropdownIndex = optionIndex;
+                                    return true;
+                                }
+                            }
+                        }
+
+                        // Fallback: Mono source behavior uses "-" placeholder + i+1 index mapping.
+                        int placeholderStyleIndex = i + 1;
+                        if (placeholderStyleIndex >= 0 && placeholderStyleIndex < shop.DestinationDropdown.options.Count)
+                        {
+                            dropdownIndex = placeholderStyleIndex;
+                            return true;
+                        }
+
+                        // Last fallback for dropdowns without placeholder.
+                        if (i >= 0 && i < shop.DestinationDropdown.options.Count)
+                        {
+                            dropdownIndex = i;
+                            return true;
+                        }
+
+                        return false;
+                    }
+                }
+
+                return false;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning("[Repurchase] Destination fallback resolution failed: " + ex.Message);
+                return false;
+            }
         }
 
         /// <summary>
         /// Sets the destination property via reflection.
         /// </summary>
-        private static void SetDestinationProperty(DeliveryShop shop, int selectedIndex)
+        private static bool SetDestinationProperty(DeliveryShop shop, int selectedIndex, string recordDestination)
         {
             try
             {
                 var potentialDestinations = shop.GetPotentialDestinations();
-                if (potentialDestinations == null) return;
+                if (potentialDestinations == null) return false;
 
                 string selectedText = shop.DestinationDropdown.options[selectedIndex].text.Trim();
+                string selectedNormalized = NormalizeForMatch(selectedText);
+                string recordDestinationNormalized = NormalizeForMatch(recordDestination);
+
+                Property? selectedByRecord = null;
+                Property? selectedByDropdown = null;
 
                 foreach (var dest in potentialDestinations)
                 {
                     string propName = dest.ToString() ?? "";
+                    string propertyCode = "";
 
-                    var nameProp = dest.GetType().GetProperty("Name");
+                    var codeProp = dest.GetType().GetProperty("PropertyCode");
+                    if (codeProp != null)
+                    {
+                        var codeValue = codeProp.GetValue(dest);
+                        if (codeValue != null)
+                        {
+                            propertyCode = codeValue.ToString() ?? "";
+                        }
+                    }
+
+                    var nameProp = dest.GetType().GetProperty("PropertyName")
+                        ?? dest.GetType().GetProperty("Name");
                     if (nameProp != null)
                     {
                         var nameVal = nameProp.GetValue(dest);
@@ -296,21 +462,85 @@ namespace AbsurdelyBetterDelivery.Services
                         }
                     }
 
-                    string propNormalized = propName.Replace(" ", "").ToLowerInvariant();
-                    string selectedNormalized = selectedText.Replace(" ", "").ToLowerInvariant();
+                    string propNormalized = NormalizeForMatch(propName);
+                    string codeNormalized = NormalizeForMatch(propertyCode);
 
-                    if (propNormalized.Contains(selectedNormalized) || selectedNormalized.Contains(propNormalized))
+                    bool matchesRecord =
+                        !string.IsNullOrEmpty(recordDestinationNormalized) &&
+                        (
+                            (!string.IsNullOrEmpty(codeNormalized) && codeNormalized.Equals(recordDestinationNormalized, StringComparison.OrdinalIgnoreCase)) ||
+                            (!string.IsNullOrEmpty(propNormalized) && propNormalized.Equals(recordDestinationNormalized, StringComparison.OrdinalIgnoreCase))
+                        );
+
+                    bool matchesDropdown =
+                        !string.IsNullOrEmpty(selectedNormalized) &&
+                        (
+                            (!string.IsNullOrEmpty(codeNormalized) && codeNormalized.Equals(selectedNormalized, StringComparison.OrdinalIgnoreCase)) ||
+                            (!string.IsNullOrEmpty(propNormalized) && propNormalized.Equals(selectedNormalized, StringComparison.OrdinalIgnoreCase))
+                        );
+
+                    if (matchesRecord && selectedByRecord == null)
                     {
-                        shop.destinationProperty = dest;
-                        shop.RefreshLoadingDockUI();
-                        break;
+                        selectedByRecord = dest;
+                    }
+
+                    if (matchesDropdown && selectedByDropdown == null)
+                    {
+                        selectedByDropdown = dest;
                     }
                 }
+
+                Property? resolvedDestination = selectedByRecord ?? selectedByDropdown;
+                if (resolvedDestination != null)
+                {
+                    shop.destinationProperty = resolvedDestination;
+                    shop.RefreshLoadingDockUI();
+
+                    string resolvedCode = string.Empty;
+                    var codeProp = resolvedDestination.GetType().GetProperty("PropertyCode");
+                    if (codeProp != null)
+                    {
+                        var codeValue = codeProp.GetValue(resolvedDestination);
+                        if (codeValue != null)
+                        {
+                            resolvedCode = codeValue.ToString() ?? string.Empty;
+                        }
+                    }
+
+                    AbsurdelyBetterDeliveryMod.DebugLog(
+                        $"[Repurchase] destinationProperty resolved to code='{resolvedCode}' for requested='{recordDestination}' (dropdown='{selectedText}')");
+                    return true;
+                }
+
+                return false;
             }
             catch (Exception ex)
             {
                 MelonLogger.Warning("[Repurchase] Failed to set destinationProperty: " + ex.Message);
+                return false;
             }
+        }
+
+        /// <summary>
+        /// Normalizes text for robust matching (case-insensitive, alphanumeric only).
+        /// </summary>
+        private static string NormalizeForMatch(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return string.Empty;
+            }
+
+            var builder = new StringBuilder(value.Length);
+            foreach (char character in value)
+            {
+                if (char.IsLetterOrDigit(character))
+                {
+                    builder.Append(char.ToLowerInvariant(character));
+                }
+            }
+
+            return builder.ToString();
         }
 
         /// <summary>
@@ -348,6 +578,9 @@ namespace AbsurdelyBetterDelivery.Services
 
             shop.LoadingDockDropdown.value = dockIndex;
             shop.LoadingDockDropdownSelected(dockIndex);
+
+            AbsurdelyBetterDeliveryMod.DebugLog(
+                $"[Repurchase] Loading dock selected for '{record.StoreName}': recordDock={record.LoadingDockIndex + 1}, dropdownIndex={dockIndex}, optionText='{shop.LoadingDockDropdown.options[dockIndex].text}'");
             // Don't manually set loadingDockIndex - LoadingDockDropdownSelected should handle it
             // The dropdown handles the internal index based on whether there's a placeholder
         }
@@ -407,6 +640,12 @@ namespace AbsurdelyBetterDelivery.Services
         /// </summary>
         private static bool SubmitOrder(DeliveryShop shop, DeliveryApp app, string storeName)
         {
+            if (IsDockCurrentlyOccupied(app, shop, storeName))
+            {
+                MelonLogger.Warning($"[Repurchase] Blocking order for {storeName}: selected loading dock is currently occupied by another active delivery.");
+                return false;
+            }
+
             shop.RefreshOrderButton();
 
             string reason = "";
@@ -427,10 +666,93 @@ namespace AbsurdelyBetterDelivery.Services
                 // Only log warning if debug mode is on to avoid spamming the console
                 if (AbsurdelyBetterDeliveryMod.EnableDebugMode.Value)
                 {
-                    MelonLogger.Warning($"[Repurchase] Cannot place order: {reason}");
+                    string selectedDestinationCode = string.Empty;
+                    int selectedDock = shop.loadingDockIndex - 1;
+
+                    try
+                    {
+                        if (shop.destinationProperty != null)
+                        {
+                            selectedDestinationCode = shop.destinationProperty.PropertyCode ?? string.Empty;
+                        }
+                    }
+                    catch
+                    {
+                        selectedDestinationCode = string.Empty;
+                    }
+
+                    MelonLogger.Warning(
+                        $"[Repurchase] Cannot place order for '{storeName}': reason='{reason}', canOrder={canOrder}, fitsInVehicle={fitsInVehicle}, selectedDestination='{selectedDestinationCode}', selectedDock={selectedDock + 1}");
                 }
                 return false;
             }
+        }
+
+        /// <summary>
+        /// Checks whether the currently selected destination and loading dock are already in use
+        /// by another active delivery entry in the delivery app.
+        /// </summary>
+        private static bool IsDockCurrentlyOccupied(DeliveryApp app, DeliveryShop shop, string storeName)
+        {
+            if (app.statusDisplays == null || app.statusDisplays.Count == 0)
+            {
+                return false;
+            }
+
+            string selectedDestinationCode = string.Empty;
+            int selectedDockIndex = shop.loadingDockIndex - 1;
+
+            try
+            {
+                if (shop.destinationProperty != null)
+                {
+                    selectedDestinationCode = shop.destinationProperty.PropertyCode ?? string.Empty;
+                }
+            }
+            catch
+            {
+                selectedDestinationCode = string.Empty;
+            }
+
+            if (selectedDockIndex < 0 || string.IsNullOrWhiteSpace(selectedDestinationCode))
+            {
+                return false;
+            }
+
+            string selectedDestinationNormalized = NormalizeForMatch(selectedDestinationCode);
+
+            foreach (var display in app.statusDisplays)
+            {
+                if (display == null || display.DeliveryInstance == null)
+                {
+                    continue;
+                }
+
+                DeliveryInstance activeDelivery = display.DeliveryInstance;
+
+                string activeDestination = activeDelivery.DestinationCode ?? string.Empty;
+                int activeDockIndex = activeDelivery.LoadingDockIndex;
+
+                bool sameDestination = NormalizeForMatch(activeDestination)
+                    .Equals(selectedDestinationNormalized, StringComparison.OrdinalIgnoreCase);
+
+                bool sameDock = activeDockIndex == selectedDockIndex;
+
+                if (sameDestination && sameDock)
+                {
+                    AbsurdelyBetterDeliveryMod.DebugLog(
+                        $"[Repurchase] Dock occupied check hit: destination={activeDestination}, dock={activeDockIndex + 1}, existingStore={activeDelivery.StoreName}, requestedStore={storeName}");
+                    return true;
+                }
+
+                if (AbsurdelyBetterDeliveryMod.EnableDebugMode.Value)
+                {
+                    AbsurdelyBetterDeliveryMod.DebugLog(
+                        $"[Repurchase] Dock occupied check: active destination={activeDestination}, dock={activeDockIndex + 1}, selected destination={selectedDestinationCode}, dock={selectedDockIndex + 1}");
+                }
+            }
+
+            return false;
         }
 
         #endregion

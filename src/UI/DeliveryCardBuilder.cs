@@ -461,16 +461,48 @@ namespace AbsurdelyBetterDelivery.UI
         private static void CreateRepeatOnceButton(Transform parent, DeliveryRecord record, DeliveryApp app)
         {
             var btn = CreateIconButton(parent, "RepeatOnceButton", AbsurdelyBetterDeliveryMod.RepeatOnceIcon);
+            var displayedRecord = CreateRepurchaseSnapshot(record);
 
             // Add tooltip
             TooltipUI.AddTooltip(btn.gameObject, "Rebuy this Delivery once");
 
             btn.onClick.AddListener((UnityAction)(() =>
             {
-                AbsurdelyBetterDeliveryMod.DebugLog($"[RepeatOnce] Repeating order from {record.StoreName}");
-                DeliveryHistoryManager.RepurchaseRecord(record, app);
+                AbsurdelyBetterDeliveryMod.DebugLog(
+                    $"[RepeatOnce] Repeating order from {displayedRecord.StoreName} (ID={displayedRecord.ID}, destination={displayedRecord.Destination}, dock={displayedRecord.LoadingDockIndex + 1})");
+                DeliveryHistoryManager.RepurchaseRecord(displayedRecord, app);
                 DeliveryHistoryUI.RefreshHistoryUI(app);
             }));
+        }
+
+        /// <summary>
+        /// Creates an immutable snapshot of the rendered record for repeat-once actions.
+        /// This prevents ordering a mutated in-memory record when the UI is stale.
+        /// </summary>
+        private static DeliveryRecord CreateRepurchaseSnapshot(DeliveryRecord source)
+        {
+            var snapshot = new DeliveryRecord
+            {
+                ID = source.ID,
+                StoreName = source.StoreName,
+                Destination = source.Destination,
+                LoadingDockIndex = source.LoadingDockIndex,
+                TotalPrice = source.TotalPrice,
+                Timestamp = source.Timestamp,
+                IsFavorite = source.IsFavorite,
+                RecurringSettings = source.RecurringSettings
+            };
+
+            foreach (var item in source.Items)
+            {
+                snapshot.Items.Add(new DeliveryItem
+                {
+                    Name = item.Name,
+                    Quantity = item.Quantity
+                });
+            }
+
+            return snapshot;
         }
 
         /// <summary>
