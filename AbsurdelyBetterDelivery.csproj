@@ -119,6 +119,9 @@
     <EmbeddedResource Include="assets\repeat_on.png">
       <LogicalName>AbsurdelyBetterDelivery.assets.repeat_on.png</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="assets\modding_forge.png">
+      <LogicalName>AbsurdelyBetterDelivery.assets.modding_forge.png</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <Target Name="PostBuild" AfterTargets="PostBuildEvent">

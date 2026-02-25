@@ -1,10 +1,11 @@
 // =============================================================================
 // Copyright (c) 2026 Modding Forge
 // This file is part of Absurdely Better Delivery
-// by Wuerfelhusten and falls under the license GPLv3.
+// by Wuerfelhusten and is licensed under Modding Forge All Rights Reserved.
 // =============================================================================
 
 using System;
+using AbsurdelyBetterDelivery.Services;
 using HarmonyLib;
 using Il2CppScheduleOne.UI.Phone.Delivery;
 using MelonLoader;
@@ -23,8 +24,15 @@ namespace AbsurdelyBetterDelivery.Patches
         /// </summary>
         /// <param name="__instance">The DeliveryShop instance.</param>
         [HarmonyPrefix]
-        public static void Prefix(DeliveryShop __instance)
+        public static bool Prefix(DeliveryShop __instance)
         {
+            if (!DeliveryWaitingQueueService.IsInternalPlacementActive &&
+                DeliveryWaitingQueueService.TryQueueFromShopSelection(__instance))
+            {
+                AbsurdelyBetterDeliveryMod.DebugLog($"[Patch] Order queued for waiting: {__instance.MatchingShopInterfaceName}");
+                return false;
+            }
+
             try
             {
                 float itemsTotal = CalculateItemsTotal(__instance);
@@ -40,6 +48,8 @@ namespace AbsurdelyBetterDelivery.Patches
             {
                 MelonLogger.Warning($"[Patch] Failed to capture order price: {ex.Message}");
             }
+
+            return true;
         }
 
         /// <summary>

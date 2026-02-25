@@ -1,11 +1,12 @@
 // =============================================================================
 // Copyright (c) 2026 Modding Forge
 // This file is part of Absurdely Better Delivery
-// by Wuerfelhusten and falls under the license GPLv3.
+// by Wuerfelhusten and is licensed under Modding Forge All Rights Reserved.
 // =============================================================================
 
 using System;
 using System.Text;
+using AbsurdelyBetterDelivery.Managers;
 using AbsurdelyBetterDelivery.Models;
 using AbsurdelyBetterDelivery.Multiplayer;
 using AbsurdelyBetterDelivery.Utils;
@@ -31,7 +32,7 @@ namespace AbsurdelyBetterDelivery.Services
         /// </summary>
         /// <param name="record">The delivery record to repurchase.</param>
         /// <param name="app">The DeliveryApp instance (optional, will be found if null).</param>
-        public static bool RepurchaseRecord(DeliveryRecord record, DeliveryApp? app = null)
+        public static bool RepurchaseRecord(DeliveryRecord record, DeliveryApp? app = null, bool allowWaitingQueue = true)
         {
             if (record == null)
             {
@@ -55,7 +56,7 @@ namespace AbsurdelyBetterDelivery.Services
             }
 
             AbsurdelyBetterDeliveryMod.DebugLog($"[Repurchase] Repurchasing {record.StoreName}...");
-            return ExecuteRepurchase(record, app);
+            return ExecuteRepurchase(record, app, allowWaitingQueue);
         }
 
         /// <summary>
@@ -76,7 +77,7 @@ namespace AbsurdelyBetterDelivery.Services
             }
 
             var lastDelivery = Managers.DeliveryHistoryManager.History[0];
-            ExecuteRepurchase(lastDelivery, app);
+            ExecuteRepurchase(lastDelivery, app, allowWaitingQueue: true);
         }
 
         #endregion
@@ -106,7 +107,7 @@ namespace AbsurdelyBetterDelivery.Services
         /// Executes the repurchase operation.
         /// Returns true if order was placed, false otherwise.
         /// </summary>
-        private static bool ExecuteRepurchase(DeliveryRecord record, DeliveryApp app)
+        private static bool ExecuteRepurchase(DeliveryRecord record, DeliveryApp app, bool allowWaitingQueue)
         {
             AbsurdelyBetterDeliveryMod.DebugLog(
                 $"[Repurchase] Record details: ID={record.ID}, store={record.StoreName}, destination={record.Destination}, dock={record.LoadingDockIndex + 1}, items={record.Items.Count}");
@@ -142,7 +143,20 @@ namespace AbsurdelyBetterDelivery.Services
             }
 
             // Submit order and return success status
-            return SubmitOrder(targetShop, app, record.StoreName);
+            if (allowWaitingQueue && DeliveryWaitingQueueService.TryEnqueueIfBlocked(record, app, sendShopMessage: true))
+            {
+                AbsurdelyBetterDeliveryMod.DebugLog(
+                    $"[Repurchase] Order queued for waiting instead of immediate submit: {record.StoreName}, destination={record.Destination}, dock={record.LoadingDockIndex + 1}");
+                return true;
+            }
+
+            bool success = SubmitOrder(targetShop, app, record.StoreName);
+            if (success)
+            {
+                DeliveryHistoryManager.RegisterSuppressedRebuy(record);
+            }
+
+            return success;
         }
 
         /// <summary>
@@ -184,6 +198,7 @@ namespace AbsurdelyBetterDelivery.Services
             foreach (var item in record.Items)
             {
                 bool found = false;
+                string targetNameNormalized = NormalizeItemNameForMatch(item.Name);
 
                 foreach (var entry in shop.listingEntries)
                 {
@@ -209,10 +224,16 @@ namespace AbsurdelyBetterDelivery.Services
                     }
 
                     // Check if item matches
-                    bool uiMatch = !string.IsNullOrEmpty(uiName) && 
-                                   uiName.Trim().Equals(item.Name.Trim(), StringComparison.OrdinalIgnoreCase);
+                    string uiNameNormalized = NormalizeItemNameForMatch(uiName ?? string.Empty);
+                    string dataNameNormalized = NormalizeItemNameForMatch(dataName ?? string.Empty);
 
-                    if (uiMatch || !string.IsNullOrEmpty(dataName))
+                    bool uiMatch = !string.IsNullOrEmpty(uiNameNormalized) &&
+                                   uiNameNormalized.Equals(targetNameNormalized, StringComparison.Ordinal);
+
+                    bool dataMatch = !string.IsNullOrEmpty(dataNameNormalized) &&
+                                     dataNameNormalized.Equals(targetNameNormalized, StringComparison.Ordinal);
+
+                    if (uiMatch || dataMatch)
                     {
                         entry.SetQuantity(item.Quantity, true);
                         found = true;
@@ -228,6 +249,37 @@ namespace AbsurdelyBetterDelivery.Services
             }
 
             return itemsFound;
+        }
+
+        /// <summary>
+        /// Normalizes item names for resilient matching between history/queue and live shop listings.
+        /// </summary>
+        private static string NormalizeItemNameForMatch(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return string.Empty;
+            }
+
+            int cutIndex = value.IndexOf('(');
+            if (cutIndex < 0)
+            {
+                cutIndex = value.IndexOf('[');
+            }
+
+            string baseName = cutIndex > 0 ? value.Substring(0, cutIndex) : value;
+            baseName = baseName.Trim();
+
+            var buffer = new StringBuilder(baseName.Length);
+            foreach (char character in baseName)
+            {
+                if (char.IsLetterOrDigit(character))
+                {
+                    buffer.Append(char.ToLowerInvariant(character));
+                }
+            }
+
+            return buffer.ToString();
         }
 
         /// <summary>

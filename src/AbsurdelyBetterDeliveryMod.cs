@@ -1,7 +1,7 @@
 // =============================================================================
 // Copyright (c) 2026 Modding Forge
 // This file is part of Absurdely Better Delivery
-// by Wuerfelhusten and falls under the license GPLv3.
+// by Wuerfelhusten and is licensed under Modding Forge All Rights Reserved.
 // =============================================================================
 
 using System;
@@ -46,6 +46,12 @@ namespace AbsurdelyBetterDelivery
 
         /// <summary>Whether to enable debug logging.</summary>
         public static MelonPreferences_Entry<bool> EnableDebugMode = null!;
+
+        /// <summary>Whether delivery arrival phone messages are enabled.</summary>
+        public static MelonPreferences_Entry<bool> EnableDeliveryArrivalMessages = null!;
+
+        /// <summary>Whether queued-delivery shop messages are enabled.</summary>
+        public static MelonPreferences_Entry<bool> EnableDeliveryQueueMessages = null!;
 
         #endregion
 
@@ -96,6 +102,9 @@ namespace AbsurdelyBetterDelivery
         /// <summary>Recurring on icon.</summary>
         public static Sprite? RepeatOnIcon { get; private set; }
 
+        /// <summary>Modding Forge contact avatar icon.</summary>
+        public static Sprite? ModdingForgeIcon { get; private set; }
+
         #endregion
 
         #region Lifecycle Methods
@@ -132,6 +141,9 @@ namespace AbsurdelyBetterDelivery
             }
             else if (sceneName == "Menu")
             {
+                // Graceful transition out of a save: commit session data and clear crash recovery backup.
+                DeliveryHistoryManager.CommitSession();
+
                 _isInSaveGame = false;
                 _currentSaveIdentifier = "Default";
                 _tutorialSceneLoaded = false; // Reset flag when returning to menu
@@ -148,8 +160,22 @@ namespace AbsurdelyBetterDelivery
             // Update delivery time displays
             DeliveryHistoryUI.UpdateTimeDisplays();
 
+            // Process queued deliveries that are waiting for occupied destination/store slots.
+            DeliveryWaitingQueueService.Update();
+
             // Update recurring order checks
             RecurringOrderService.Update();
+
+            // Send one-time welcome message per save when messaging systems are ready.
+            WelcomeMessageService.Update();
+        }
+
+        /// <inheritdoc/>
+        public override void OnApplicationQuit()
+        {
+            // Graceful shutdown path; keeps crash recovery only for unexpected exits.
+            DeliveryHistoryManager.CommitSession();
+            MultiplayerManager.Shutdown();
         }
 
         #endregion
@@ -197,6 +223,20 @@ namespace AbsurdelyBetterDelivery
                 default_value: false,
                 display_name: "Enable Debug Mode",
                 description: "Enable detailed debug logging to MelonLoader console."
+            );
+
+            EnableDeliveryArrivalMessages = MainCategory.CreateEntry(
+                identifier: "EnableDeliveryArrivalMessages",
+                default_value: true,
+                display_name: "Enable Delivery Arrival Messages",
+                description: "Shows \"your order has been delivered\" messages. Does not affect the one-time Modding Forge welcome message."
+            );
+
+            EnableDeliveryQueueMessages = MainCategory.CreateEntry(
+                identifier: "EnableDeliveryQueueMessages",
+                default_value: true,
+                display_name: "Enable Delivery Queue Messages",
+                description: "Shows \"your delivery is queued\" messages from shops when orders must wait."
             );
 
             // Validate multiplier range
@@ -363,6 +403,7 @@ namespace AbsurdelyBetterDelivery
             
             DeliveryHistoryManager.Initialize(identifier);
             RecurringOrderService.Initialize(identifier);
+            WelcomeMessageService.Initialize(identifier);
             
             // Initialize multiplayer system
             MultiplayerManager.Initialize();
@@ -451,6 +492,13 @@ namespace AbsurdelyBetterDelivery
                 DebugLog($"[DataManagement] Deleted: {recurringPath}");
             }
 
+            string welcomeFlagPath = Path.Combine(MelonLoader.Utils.MelonEnvironment.UserDataDirectory, $"WelcomeMessageSent_{_currentSaveIdentifier}.flag");
+            if (File.Exists(welcomeFlagPath))
+            {
+                File.Delete(welcomeFlagPath);
+                DebugLog($"[DataManagement] Deleted: {welcomeFlagPath}");
+            }
+
             DebugLog($"[DataManagement] Data cleared for save: {_currentSaveIdentifier}");
             
             // Broadcast clear data to clients if we're the host
@@ -487,6 +535,14 @@ namespace AbsurdelyBetterDelivery
                     LoggerInstance.Msg($"[DataManagement] Deleted: {Path.GetFileName(file)}");
                 }
 
+                // Delete all WelcomeMessageSent_*.flag files
+                var welcomeFlags = Directory.GetFiles(userDataPath, "WelcomeMessageSent_*.flag");
+                foreach (var file in welcomeFlags)
+                {
+                    File.Delete(file);
+                    LoggerInstance.Msg($"[DataManagement] Deleted: {Path.GetFileName(file)}");
+                }
+
                 // Clear current in-memory data
                 DeliveryHistoryManager.History.Clear();
 
@@ -514,6 +570,7 @@ namespace AbsurdelyBetterDelivery
                 RepeatOnceIcon = LoadEmbeddedSprite("AbsurdelyBetterDelivery.assets.repeat_once.png");
                 RepeatOffIcon = LoadEmbeddedSprite("AbsurdelyBetterDelivery.assets.repeat_off.png");
                 RepeatOnIcon = LoadEmbeddedSprite("AbsurdelyBetterDelivery.assets.repeat_on.png");
+                ModdingForgeIcon = LoadEmbeddedSprite("AbsurdelyBetterDelivery.assets.modding_forge.png");
 
                 LogIcons();
             }
@@ -533,6 +590,7 @@ namespace AbsurdelyBetterDelivery
             LogIconStatus("repeat_once", RepeatOnceIcon);
             LogIconStatus("repeat_off", RepeatOffIcon);
             LogIconStatus("repeat_on", RepeatOnIcon);
+            LogIconStatus("modding_forge", ModdingForgeIcon);
         }
 
         /// <summary>

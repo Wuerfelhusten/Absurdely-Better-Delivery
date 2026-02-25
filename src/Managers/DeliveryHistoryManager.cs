@@ -1,7 +1,7 @@
 // =============================================================================
 // Copyright (c) 2026 Modding Forge
 // This file is part of Absurdely Better Delivery
-// by Wuerfelhusten and falls under the license GPLv3.
+// by Wuerfelhusten and is licensed under Modding Forge All Rights Reserved.
 // =============================================================================
 
 using System;
@@ -31,6 +31,8 @@ namespace AbsurdelyBetterDelivery.Managers
         #region Private Fields
 
         private static string _currentSaveName = "Default";
+        private static bool _sessionInitialized;
+        private static readonly Dictionary<string, Queue<string>> PendingSuppressedRebuyByLocation = new(StringComparer.OrdinalIgnoreCase);
 
         #endregion
 
@@ -41,6 +43,12 @@ namespace AbsurdelyBetterDelivery.Managers
         /// </summary>
         private static string HistoryPath => 
             Path.Combine(MelonEnvironment.UserDataDirectory, $"DeliveryHistory_{_currentSaveName}.json");
+
+        /// <summary>
+        /// Path to the per-session backup used for crash recovery.
+        /// </summary>
+        private static string SessionBackupPath =>
+            Path.Combine(MelonEnvironment.UserDataDirectory, $"DeliveryHistory_{_currentSaveName}.session.bak");
 
         /// <summary>
         /// The list of all delivery records.
@@ -57,8 +65,40 @@ namespace AbsurdelyBetterDelivery.Managers
         /// <param name="saveName">Name of the save file.</param>
         public static void Initialize(string saveName = "Default")
         {
+            if (_sessionInitialized && !string.Equals(_currentSaveName, saveName, StringComparison.OrdinalIgnoreCase))
+            {
+                CommitSession();
+            }
+
             _currentSaveName = saveName;
+
+            RecoverHistoryAfterUnexpectedExit();
             LoadHistory();
+            CreateSessionBackupSnapshot();
+            _sessionInitialized = true;
+        }
+
+        /// <summary>
+        /// Commits the current session history and clears crash-recovery backup.
+        /// Call this on graceful exits (menu return / application quit).
+        /// </summary>
+        public static void CommitSession()
+        {
+            try
+            {
+                SaveHistory();
+
+                if (File.Exists(SessionBackupPath))
+                {
+                    File.Delete(SessionBackupPath);
+                }
+
+                _sessionInitialized = false;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[History] Failed to commit session: {ex.Message}");
+            }
         }
 
         /// <summary>
@@ -123,6 +163,106 @@ namespace AbsurdelyBetterDelivery.Managers
             }
         }
 
+        /// <summary>
+        /// Registers a repurchase request so completion can update the existing favorite/recurring record
+        /// instead of creating a new history entry.
+        /// </summary>
+        /// <param name="sourceRecord">Source record used for repurchase.</param>
+        public static void RegisterSuppressedRebuy(DeliveryRecord sourceRecord)
+        {
+            if (sourceRecord == null)
+            {
+                return;
+            }
+
+            if (!sourceRecord.IsFavorite && !sourceRecord.IsRecurring)
+            {
+                return;
+            }
+
+            string key = BuildLocationKey(sourceRecord.StoreName, sourceRecord.Destination, sourceRecord.LoadingDockIndex);
+            if (!PendingSuppressedRebuyByLocation.TryGetValue(key, out Queue<string>? queue))
+            {
+                queue = new Queue<string>();
+                PendingSuppressedRebuyByLocation[key] = queue;
+            }
+
+            queue.Enqueue(sourceRecord.ID);
+
+            AbsurdelyBetterDeliveryMod.DebugLog(
+                $"[History] Registered suppressed rebuy for ID={sourceRecord.ID}, key={key}, favorite={sourceRecord.IsFavorite}, recurring={sourceRecord.IsRecurring}");
+        }
+
+        /// <summary>
+        /// Tries to resolve a completion to a previously registered favorite/recurring rebuy marker.
+        /// </summary>
+        /// <param name="delivery">Completed delivery instance.</param>
+        /// <param name="matchedRecord">Matched source record when found.</param>
+        /// <returns><c>true</c> if completion should skip creating a new history entry.</returns>
+        public static bool TryConsumeSuppressedRebuy(DeliveryInstance delivery, out DeliveryRecord? matchedRecord)
+        {
+            matchedRecord = null;
+            if (delivery == null)
+            {
+                return false;
+            }
+
+            string key = BuildLocationKey(delivery.StoreName, delivery.DestinationCode, delivery.LoadingDockIndex);
+            if (!PendingSuppressedRebuyByLocation.TryGetValue(key, out Queue<string>? queue) || queue.Count == 0)
+            {
+                return false;
+            }
+
+            while (queue.Count > 0)
+            {
+                string recordId = queue.Dequeue();
+                DeliveryRecord? record = FindRecordById(recordId);
+                if (record == null)
+                {
+                    continue;
+                }
+
+                if (!record.IsFavorite && !record.IsRecurring)
+                {
+                    continue;
+                }
+
+                matchedRecord = record;
+                if (queue.Count == 0)
+                {
+                    PendingSuppressedRebuyByLocation.Remove(key);
+                }
+
+                return true;
+            }
+
+            PendingSuppressedRebuyByLocation.Remove(key);
+            return false;
+        }
+
+        /// <summary>
+        /// Updates an existing record after a favorite/recurring rebuy completion without creating a new record.
+        /// </summary>
+        /// <param name="record">Existing history record.</param>
+        /// <param name="delivery">Completed delivery instance.</param>
+        public static void ApplyCompletionToExistingRecord(DeliveryRecord record, DeliveryInstance delivery)
+        {
+            if (record == null || delivery == null)
+            {
+                return;
+            }
+
+            // Keep stable identity (ID) so favorite/recurring references remain intact.
+            record.StoreName = delivery.StoreName ?? record.StoreName;
+            record.Timestamp = DateTime.Now;
+
+            ExtractDeliveryDetails(delivery, record);
+            record.Items.Clear();
+            ExtractItems(delivery, record);
+
+            SaveHistory();
+        }
+
         #endregion
 
         #region Repurchase Delegation
@@ -177,18 +317,117 @@ namespace AbsurdelyBetterDelivery.Managers
         {
             if (!File.Exists(HistoryPath))
             {
+                History = new List<DeliveryRecord>();
                 return;
             }
 
             try
             {
                 string json = File.ReadAllText(HistoryPath);
-                History = JsonSerializer.Deserialize<List<DeliveryRecord>>(json) ?? new List<DeliveryRecord>();
+                History = DeserializeHistory(json);
             }
             catch (Exception ex)
             {
                 MelonLogger.Error("[History] Failed to load history: " + ex.Message);
+                History = new List<DeliveryRecord>();
             }
+        }
+
+        /// <summary>
+        /// Restores history from session backup if the previous run ended unexpectedly.
+        /// </summary>
+        private static void RecoverHistoryAfterUnexpectedExit()
+        {
+            if (!File.Exists(SessionBackupPath))
+            {
+                return;
+            }
+
+            try
+            {
+                string backupJson = File.ReadAllText(SessionBackupPath);
+                List<DeliveryRecord> recovered = DeserializeHistory(backupJson);
+
+                History = recovered;
+
+                var options = new JsonSerializerOptions { WriteIndented = true };
+                File.WriteAllText(HistoryPath, JsonSerializer.Serialize(recovered, options));
+
+                File.Delete(SessionBackupPath);
+                MelonLogger.Msg($"[History] Recovered from crash backup for save '{_currentSaveName}'. Restored {recovered.Count} entries.");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[History] Failed crash recovery for save '{_currentSaveName}': {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Creates a snapshot of the starting history state for crash recovery.
+        /// </summary>
+        private static void CreateSessionBackupSnapshot()
+        {
+            try
+            {
+                var options = new JsonSerializerOptions { WriteIndented = true };
+                string contents = JsonSerializer.Serialize(History, options);
+                File.WriteAllText(SessionBackupPath, contents);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[History] Failed to create session backup: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Deserializes history JSON safely.
+        /// </summary>
+        private static List<DeliveryRecord> DeserializeHistory(string json)
+        {
+            return JsonSerializer.Deserialize<List<DeliveryRecord>>(json) ?? new List<DeliveryRecord>();
+        }
+
+        private static DeliveryRecord? FindRecordById(string recordId)
+        {
+            if (string.IsNullOrWhiteSpace(recordId))
+            {
+                return null;
+            }
+
+            for (int i = 0; i < History.Count; i++)
+            {
+                DeliveryRecord record = History[i];
+                if (record != null && string.Equals(record.ID, recordId, StringComparison.OrdinalIgnoreCase))
+                {
+                    return record;
+                }
+            }
+
+            return null;
+        }
+
+        private static string BuildLocationKey(string storeName, string destination, int loadingDockIndex)
+        {
+            return $"{NormalizeForMatch(storeName)}|{NormalizeForMatch(destination)}|{loadingDockIndex}";
+        }
+
+        private static string NormalizeForMatch(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return string.Empty;
+            }
+
+            var buffer = new System.Text.StringBuilder(value.Length);
+            foreach (char c in value)
+            {
+                if (char.IsLetterOrDigit(c))
+                {
+                    buffer.Append(char.ToLowerInvariant(c));
+                }
+            }
+
+            return buffer.ToString();
         }
 
         #endregion

@@ -1,7 +1,7 @@
 // =============================================================================
 // Copyright (c) 2026 Modding Forge
 // This file is part of Absurdely Better Delivery
-// by Wuerfelhusten and falls under the license GPLv3.
+// by Wuerfelhusten and is licensed under Modding Forge All Rights Reserved.
 // =============================================================================
 
 using System;
@@ -40,6 +40,7 @@ namespace AbsurdelyBetterDelivery.Services
         private static Dictionary<string, DateTime> _failureCooldowns = new Dictionary<string, DateTime>();
         private static HashSet<string> _failureCooldownLogged = new HashSet<string>();
         private static HashSet<string> _activeDeliveryBlockLogged = new HashSet<string>();
+        private static Dictionary<string, int> _asapRoundRobinNextByLocation = new Dictionary<string, int>();
         private static readonly TimeSpan CooldownDuration = TimeSpan.FromMinutes(5);
         private static readonly TimeSpan FailureCooldownDuration = TimeSpan.FromSeconds(10);
         private static int _lastAsapCandidateCount = -1;
@@ -77,6 +78,7 @@ namespace AbsurdelyBetterDelivery.Services
             _failureCooldowns.Clear();
             _failureCooldownLogged.Clear();
             _activeDeliveryBlockLogged.Clear();
+            _asapRoundRobinNextByLocation.Clear();
             _lastAsapCandidateCount = -1;
             
             LoadRecurringOrders();
@@ -159,6 +161,7 @@ namespace AbsurdelyBetterDelivery.Services
             _failureCooldowns.Clear();
             _failureCooldownLogged.Clear();
             _activeDeliveryBlockLogged.Clear();
+            _asapRoundRobinNextByLocation.Clear();
             _lastAsapCandidateCount = -1;
             AbsurdelyBetterDeliveryMod.DebugLog("[RecurringOrders] Service reset.");
         }
@@ -312,7 +315,7 @@ namespace AbsurdelyBetterDelivery.Services
                     continue;
 
                 // Execute the order
-                ExecuteRecurringOrder(record);
+                ExecuteRecurringOrder(record, allowWaitingQueue: true);
             }
         }
 
@@ -369,6 +372,8 @@ namespace AbsurdelyBetterDelivery.Services
         {
             var asapRecords = DeliveryHistoryManager.History
                 .Where(r => r.IsRecurring && r.RecurringSettings?.Type == RecurringType.AsSoonAsPossible)
+                .OrderBy(r => r.Timestamp)
+                .ThenBy(r => r.ID, StringComparer.Ordinal)
                 .ToList();
 
             if (asapRecords.Count == 0) return;
@@ -382,61 +387,129 @@ namespace AbsurdelyBetterDelivery.Services
             var app = GetDeliveryApp();
             if (app == null) return;
 
-            // Check if any loading dock is available for each destination
-            foreach (var record in asapRecords)
+            // Process one record per destination+dock key in deterministic round-robin order.
+            var locationGroups = asapRecords
+                .GroupBy(GetAsapLocationKey)
+                .ToList();
+
+            foreach (var locationGroup in locationGroups)
             {
-                // Check failure cooldown
-                if (_failureCooldowns.TryGetValue(record.ID, out var lastFailure))
+                string locationKey = locationGroup.Key;
+                var orderedGroup = locationGroup
+                    .OrderBy(r => r.Timestamp)
+                    .ThenBy(r => r.ID, StringComparer.Ordinal)
+                    .ToList();
+
+                if (orderedGroup.Count == 0)
                 {
-                    if (DateTime.Now - lastFailure < FailureCooldownDuration)
+                    continue;
+                }
+
+                int startIndex = GetRoundRobinStartIndex(locationKey, orderedGroup.Count);
+                bool executedForLocation = false;
+
+                for (int offset = 0; offset < orderedGroup.Count; offset++)
+                {
+                    int candidateIndex = (startIndex + offset) % orderedGroup.Count;
+                    var record = orderedGroup[candidateIndex];
+
+                    // Check failure cooldown
+                    if (_failureCooldowns.TryGetValue(record.ID, out var lastFailure))
                     {
-                        if (!_failureCooldownLogged.Contains(record.ID))
+                        if (DateTime.Now - lastFailure < FailureCooldownDuration)
+                        {
+                            if (!_failureCooldownLogged.Contains(record.ID))
+                            {
+                                AbsurdelyBetterDeliveryMod.DebugLog(
+                                    $"[RecurringOrders] ASAP skip '{record.StoreName}' (ID={record.ID}) due to failure cooldown ({FailureCooldownDuration.TotalSeconds:F0}s).");
+                                _failureCooldownLogged.Add(record.ID);
+                            }
+                            continue;
+                        }
+
+                        if (_failureCooldownLogged.Contains(record.ID))
                         {
                             AbsurdelyBetterDeliveryMod.DebugLog(
-                                $"[RecurringOrders] ASAP skip '{record.StoreName}' (ID={record.ID}) due to failure cooldown ({FailureCooldownDuration.TotalSeconds:F0}s).");
-                            _failureCooldownLogged.Add(record.ID);
+                                $"[RecurringOrders] Failure cooldown ended for '{record.StoreName}' (ID={record.ID}), retrying.");
+                            _failureCooldownLogged.Remove(record.ID);
+                        }
+                    }
+
+                    // For ASAP, check if there's already an active delivery for this store/destination
+                    if (HasActiveDelivery(app, record))
+                    {
+                        if (!_activeDeliveryBlockLogged.Contains(record.ID))
+                        {
+                            AbsurdelyBetterDeliveryMod.DebugLog(
+                                $"[RecurringOrders] ASAP skip '{record.StoreName}' (ID={record.ID}) because active delivery is blocking destination={record.Destination}, dock={record.LoadingDockIndex + 1}.");
+                            _activeDeliveryBlockLogged.Add(record.ID);
                         }
                         continue;
                     }
 
-                    if (_failureCooldownLogged.Contains(record.ID))
+                    if (_activeDeliveryBlockLogged.Contains(record.ID))
                     {
                         AbsurdelyBetterDeliveryMod.DebugLog(
-                            $"[RecurringOrders] Failure cooldown ended for '{record.StoreName}' (ID={record.ID}), retrying.");
-                        _failureCooldownLogged.Remove(record.ID);
+                            $"[RecurringOrders] Active delivery block ended for '{record.StoreName}' (ID={record.ID}).");
+                        _activeDeliveryBlockLogged.Remove(record.ID);
                     }
-                }
 
-                // For ASAP, check if there's already an active delivery for this store/destination
-                if (HasActiveDelivery(app, record))
-                {
-                    if (!_activeDeliveryBlockLogged.Contains(record.ID))
+                    // Check if we can place an order
+                    if (CanPlaceOrder(record))
                     {
-                        AbsurdelyBetterDeliveryMod.DebugLog(
-                            $"[RecurringOrders] ASAP skip '{record.StoreName}' (ID={record.ID}) because active delivery is blocking destination={record.Destination}, dock={record.LoadingDockIndex + 1}.");
-                        _activeDeliveryBlockLogged.Add(record.ID);
+                        ExecuteRecurringOrder(record, allowWaitingQueue: false);
+
+                        // Advance pointer after a processed attempt to keep strict alternation.
+                        int nextIndex = (candidateIndex + 1) % orderedGroup.Count;
+                        _asapRoundRobinNextByLocation[locationKey] = nextIndex;
+                        executedForLocation = true;
+                        break;
                     }
-                    continue; // Skip if already delivering
-                }
 
-                if (_activeDeliveryBlockLogged.Contains(record.ID))
-                {
-                    AbsurdelyBetterDeliveryMod.DebugLog(
-                        $"[RecurringOrders] Active delivery block ended for '{record.StoreName}' (ID={record.ID}).");
-                    _activeDeliveryBlockLogged.Remove(record.ID);
-                }
-
-                // Check if we can place an order
-                if (CanPlaceOrder(record))
-                {
-                    ExecuteRecurringOrder(record);
-                }
-                else
-                {
                     AbsurdelyBetterDeliveryMod.DebugLog(
                         $"[RecurringOrders] ASAP skip '{record.StoreName}' (ID={record.ID}) because CanPlaceOrder returned false.");
                 }
+
+                if (!executedForLocation)
+                {
+                    _asapRoundRobinNextByLocation[locationKey] = startIndex;
+                }
             }
+        }
+
+        /// <summary>
+        /// Builds a stable grouping key for ASAP records based on destination and loading dock.
+        /// </summary>
+        /// <param name="record">Recurring record.</param>
+        /// <returns>Normalized key combining destination and dock index.</returns>
+        private static string GetAsapLocationKey(DeliveryRecord record)
+        {
+            string destination = NormalizeForMatch(record.Destination ?? string.Empty);
+            return $"{destination}|{record.LoadingDockIndex}";
+        }
+
+        /// <summary>
+        /// Gets the round-robin start index for a location group.
+        /// </summary>
+        /// <param name="locationKey">Destination and dock grouping key.</param>
+        /// <param name="groupCount">Number of records in the group.</param>
+        /// <returns>Valid start index in range [0..groupCount-1].</returns>
+        private static int GetRoundRobinStartIndex(string locationKey, int groupCount)
+        {
+            if (groupCount <= 0)
+            {
+                return 0;
+            }
+
+            if (_asapRoundRobinNextByLocation.TryGetValue(locationKey, out int storedIndex))
+            {
+                if (storedIndex >= 0 && storedIndex < groupCount)
+                {
+                    return storedIndex;
+                }
+            }
+
+            return 0;
         }
 
         /// <summary>
@@ -540,7 +613,7 @@ namespace AbsurdelyBetterDelivery.Services
         /// <summary>
         /// Executes a recurring order.
         /// </summary>
-        private static void ExecuteRecurringOrder(DeliveryRecord record)
+        private static void ExecuteRecurringOrder(DeliveryRecord record, bool allowWaitingQueue)
         {
             var app = GetDeliveryApp();
             if (app == null)
@@ -555,7 +628,7 @@ namespace AbsurdelyBetterDelivery.Services
                     $"[RecurringOrders] Executing record ID={record.ID}, store={record.StoreName}, destination={record.Destination}, dock={record.LoadingDockIndex + 1}, items={record.Items.Count}");
 
                 // Use the existing repurchase service - it returns true if order was placed
-                bool success = RepurchaseService.RepurchaseRecord(record, app);
+                bool success = RepurchaseService.RepurchaseRecord(record, app, allowWaitingQueue);
 
                 if (success)
                 {

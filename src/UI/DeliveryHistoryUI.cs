@@ -1,7 +1,7 @@
 // =============================================================================
 // Copyright (c) 2026 Modding Forge
 // This file is part of Absurdely Better Delivery
-// by Wuerfelhusten and falls under the license GPLv3.
+// by Wuerfelhusten and is licensed under Modding Forge All Rights Reserved.
 // =============================================================================
 
 using System;
@@ -202,13 +202,30 @@ namespace AbsurdelyBetterDelivery.UI
 
             if (deliveries.Count == 0)
             {
-                UIFactory.CreateEmptyMessage(_historyContainer.transform, "No active deliveries", font);
+                var queuedOrders = Services.DeliveryWaitingQueueService.GetQueuedOrdersSnapshot();
+                if (queuedOrders.Count == 0)
+                {
+                    UIFactory.CreateEmptyMessage(_historyContainer.transform, "No active deliveries", font);
+                }
+                else
+                {
+                    foreach (var queuedRecord in queuedOrders)
+                    {
+                        DeliveryCardBuilder.CreateQueuedWaitingCard(queuedRecord, _historyContainer.transform, app, font);
+                    }
+                }
             }
             else
             {
                 foreach (var delivery in deliveries)
                 {
                     DeliveryCardBuilder.CreateActiveDeliveryCard(delivery, _historyContainer.transform, app, font, _activeDeliveryCards);
+                }
+
+                var queuedOrders = Services.DeliveryWaitingQueueService.GetQueuedOrdersSnapshot();
+                foreach (var queuedRecord in queuedOrders)
+                {
+                    DeliveryCardBuilder.CreateQueuedWaitingCard(queuedRecord, _historyContainer.transform, app, font);
                 }
             }
         }

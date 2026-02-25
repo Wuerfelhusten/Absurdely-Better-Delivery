@@ -1,7 +1,7 @@
 // =============================================================================
 // Copyright (c) 2026 Modding Forge
 // This file is part of Absurdely Better Delivery
-// by Wuerfelhusten and falls under the license GPLv3.
+// by Wuerfelhusten and is licensed under Modding Forge All Rights Reserved.
 // =============================================================================
 
 using System;
@@ -74,6 +74,31 @@ namespace AbsurdelyBetterDelivery.UI
         }
 
         /// <summary>
+        /// Creates a card for a queued order waiting on occupied destination/store constraints.
+        /// </summary>
+        /// <param name="record">Queued order record.</param>
+        /// <param name="parent">Parent transform for the card.</param>
+        /// <param name="app">Reference to the DeliveryApp.</param>
+        /// <param name="font">Font for text elements.</param>
+        public static void CreateQueuedWaitingCard(
+            DeliveryRecord record,
+            Transform parent,
+            DeliveryApp app,
+            Font? font)
+        {
+            var cardObj = CreateCardBase(parent, "QueuedWaiting_" + record.ID, app);
+
+            var headerRow = UIFactory.CreateHorizontalRow(cardObj.transform, "HeaderRow");
+            CreateDestinationText(headerRow.transform, record.Destination, record.LoadingDockIndex, font);
+            CreateCustomStatusPill(headerRow.transform, "Waiting", new Color(0.75f, 0.2f, 0.2f, 1f), font, cardObj.GetComponent<Image>());
+
+            var storeRow = UIFactory.CreateHorizontalRow(cardObj.transform, "StoreRow");
+            CreateStoreText(storeRow.transform, record.StoreName, font);
+
+            CreateHistoryItemsList(cardObj.transform, record.Items, font);
+        }
+
+        /// <summary>
         /// Creates the status pill showing delivery state.
         /// </summary>
         private static (Text pillText, Image pillImg) CreateStatusPill(
@@ -124,6 +149,52 @@ namespace AbsurdelyBetterDelivery.UI
         }
 
         /// <summary>
+        /// Creates a status pill with explicit text and color.
+        /// </summary>
+        private static (Text pillText, Image pillImg) CreateCustomStatusPill(
+            Transform parent,
+            string statusText,
+            Color pillColor,
+            Font? font,
+            Image cardImg)
+        {
+            var pillObj = new GameObject("Pill");
+            pillObj.transform.SetParent(parent, false);
+
+            var pillImg = pillObj.AddComponent<Image>();
+            if (cardImg.sprite != null)
+            {
+                pillImg.sprite = cardImg.sprite;
+                pillImg.type = Image.Type.Sliced;
+            }
+
+            pillImg.color = pillColor;
+
+            var pillLE = pillObj.AddComponent<LayoutElement>();
+            pillLE.minWidth = 80f;
+            pillLE.minHeight = 24f;
+            pillLE.preferredHeight = 24f;
+
+            var pillTextObj = new GameObject("PillText");
+            pillTextObj.transform.SetParent(pillObj.transform, false);
+
+            var pillTextRect = pillTextObj.AddComponent<RectTransform>();
+            pillTextRect.anchorMin = Vector2.zero;
+            pillTextRect.anchorMax = Vector2.one;
+            pillTextRect.offsetMin = Vector2.zero;
+            pillTextRect.offsetMax = Vector2.zero;
+
+            var pillText = pillTextObj.AddComponent<Text>();
+            pillText.font = font;
+            pillText.fontSize = 13;
+            pillText.color = Color.white;
+            pillText.text = statusText;
+            pillText.alignment = TextAnchor.MiddleCenter;
+
+            return (pillText, pillImg);
+        }
+
+        /// <summary>
         /// Gets the display text for a delivery status.
         /// </summary>
         private static string GetStatusText(int status) => status switch
@@ -140,7 +211,7 @@ namespace AbsurdelyBetterDelivery.UI
         private static Color GetStatusColor(int status) => status switch
         {
             0 => new Color(0.2f, 0.4f, 0.7f, 1f),  // Blue - In Transit
-            1 => new Color(0.7f, 0.5f, 0.2f, 1f),  // Orange - Waiting
+            1 => new Color(0.75f, 0.2f, 0.2f, 1f), // Red - Waiting
             2 => new Color(0.2f, 0.6f, 0.3f, 1f),  // Green - Arrived
             _ => new Color(0.35f, 0.35f, 0.35f, 1f)
         };
