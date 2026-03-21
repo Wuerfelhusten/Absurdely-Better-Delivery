@@ -35,14 +35,14 @@ namespace AbsurdelyBetterDelivery.Patches
 
             try
             {
-                float itemsTotal = CalculateItemsTotal(__instance);
-                float deliveryFee = __instance.DeliveryFee;
-                float totalPrice = itemsTotal + deliveryFee;
+                // Ref: DeliveryShop.GetOrderTotal() introduced in 0.4.4f10 — replaces manual items+DeliveryFee sum.
+                // DeliveryFee is no longer a property on DeliveryShop; it comes from ConfigurationService internally.
+                float totalPrice = __instance.GetOrderTotal();
 
                 string storeName = __instance.MatchingShopInterfaceName;
                 DeliveryPriceTracker.PendingPrices[storeName] = totalPrice;
 
-                AbsurdelyBetterDeliveryMod.DebugLog($"[Patch] OrderPressed: Captured price {totalPrice} for {storeName} (Items: {itemsTotal}, Fee: {deliveryFee})");
+                AbsurdelyBetterDeliveryMod.DebugLog($"[Patch] OrderPressed: Captured price {totalPrice} for {storeName}");
             }
             catch (Exception ex)
             {
@@ -52,32 +52,5 @@ namespace AbsurdelyBetterDelivery.Patches
             return true;
         }
 
-        /// <summary>
-        /// Calculates the total price of all items in the order.
-        /// </summary>
-        private static float CalculateItemsTotal(DeliveryShop shop)
-        {
-            float total = 0f;
-
-            if (shop.listingEntries == null) return total;
-
-            foreach (var entry in shop.listingEntries)
-            {
-                if (entry == null || entry.SelectedQuantity <= 0 || entry.MatchingListing == null)
-                {
-                    continue;
-                }
-
-                float itemPrice = entry.MatchingListing.Price;
-                int quantity = entry.SelectedQuantity;
-                float subtotal = itemPrice * quantity;
-
-                total += subtotal;
-
-                AbsurdelyBetterDeliveryMod.DebugLog($"[Patch] Item: {entry.MatchingListing.name} x{quantity} @ ${itemPrice} = ${subtotal}");
-            }
-
-            return total;
-        }
     }
 }

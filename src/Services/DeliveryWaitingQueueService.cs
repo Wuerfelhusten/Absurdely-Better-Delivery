@@ -60,6 +60,16 @@ namespace AbsurdelyBetterDelivery.Services
         }
 
         /// <summary>
+        /// Clears transient queue runtime state.
+        /// </summary>
+        public static void Reset()
+        {
+            PendingOrders.Clear();
+            _internalPlacementDepth = 0;
+            _lastProcessTime = 0f;
+        }
+
+        /// <summary>
         /// Checks whether the specified record should wait and queues it if required.
         /// </summary>
         /// <param name="record">Order record candidate.</param>
@@ -276,7 +286,6 @@ namespace AbsurdelyBetterDelivery.Services
             }
 
             var items = new List<DeliveryItem>();
-            float itemsTotal = 0f;
 
             foreach (var entry in shop.listingEntries)
             {
@@ -291,7 +300,6 @@ namespace AbsurdelyBetterDelivery.Services
 
                 itemName = SimplifyItemName(itemName);
                 int quantity = entry.SelectedQuantity;
-                float subtotal = entry.MatchingListing.Price * quantity;
 
                 if (string.IsNullOrWhiteSpace(itemName) || quantity <= 0)
                 {
@@ -299,7 +307,6 @@ namespace AbsurdelyBetterDelivery.Services
                 }
 
                 items.Add(new DeliveryItem { Name = itemName, Quantity = quantity });
-                itemsTotal += subtotal;
             }
 
             if (items.Count == 0)
@@ -334,7 +341,8 @@ namespace AbsurdelyBetterDelivery.Services
                 StoreName = storeName,
                 Destination = destinationCode,
                 LoadingDockIndex = dockIndex,
-                TotalPrice = itemsTotal + shop.DeliveryFee,
+                // Ref: DeliveryShop.GetOrderTotal() introduced in 0.4.4f10 — DeliveryFee no longer a direct property.
+                TotalPrice = shop.GetOrderTotal(),
                 Timestamp = DateTime.Now,
                 Items = items
             };

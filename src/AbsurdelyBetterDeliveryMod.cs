@@ -143,6 +143,8 @@ namespace AbsurdelyBetterDelivery
             {
                 // Graceful transition out of a save: commit session data and clear crash recovery backup.
                 DeliveryHistoryManager.CommitSession();
+                RecurringOrderService.Reset();
+                DeliveryWaitingQueueService.Reset();
 
                 _isInSaveGame = false;
                 _currentSaveIdentifier = "Default";
@@ -157,6 +159,11 @@ namespace AbsurdelyBetterDelivery
         /// <inheritdoc/>
         public override void OnUpdate()
         {
+            if (!_isInSaveGame)
+            {
+                return;
+            }
+
             // Update delivery time displays
             DeliveryHistoryUI.UpdateTimeDisplays();
 
