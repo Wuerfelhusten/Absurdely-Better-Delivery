@@ -10,6 +10,7 @@ using System.Linq;
 using System.Reflection;
 using AbsurdelyBetterDelivery.Managers;
 using AbsurdelyBetterDelivery.Multiplayer;
+using AbsurdelyBetterDelivery.Patches;
 using AbsurdelyBetterDelivery.Services;
 using AbsurdelyBetterDelivery.UI;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
@@ -73,6 +74,12 @@ namespace AbsurdelyBetterDelivery
         private static bool _tutorialSceneLoaded = false;
 
         /// <summary>
+        /// <c>true</c> when the "Time but logical" mod is loaded, set once in
+        /// <see cref="OnInitializeMelon"/> before any UI is built.
+        /// </summary>
+        public static bool Is24HourMode { get; private set; }
+
+        /// <summary>
         /// Logs a debug message if debug mode is enabled.
         /// </summary>
         public static void DebugLog(string message)
@@ -115,6 +122,7 @@ namespace AbsurdelyBetterDelivery
             Instance = this;
             LoggerInstance.Msg("Initializing Absurdely Better Delivery...");
 
+            DetectCompatibilityMods();
             LoadIcons();
             InitializeConfiguration();
             SubscribeToModManager();
@@ -145,6 +153,9 @@ namespace AbsurdelyBetterDelivery
                 DeliveryHistoryManager.CommitSession();
                 RecurringOrderService.Reset();
                 DeliveryWaitingQueueService.Reset();
+                DeliveryArrivalMessageService.Reset();
+                DeliveryPriceTracker.PendingPrices.Clear();
+                DeliveryHistoryUI.Reset();
 
                 _isInSaveGame = false;
                 _currentSaveIdentifier = "Default";
@@ -380,21 +391,31 @@ namespace AbsurdelyBetterDelivery
         /// </summary>
         private void InitializeForSave()
         {
+            // Defensive reset of all runtime state. Protects against edge cases where the
+            // Menu scene transition is skipped (e.g. in-game save-to-save loading).
+            DeliveryWaitingQueueService.Reset();
+            DeliveryArrivalMessageService.Reset();
+            DeliveryPriceTracker.PendingPrices.Clear();
+            DeliveryHistoryUI.Reset();
+
             var saveManager = UnityEngine.Object.FindObjectOfType<SaveManager>();
             if (saveManager == null) return;
 
-            string saveName = saveManager.SaveName;
-            string containerPath = saveManager.IndividualSavesContainerPath;
-            
-            // Try to find the actual save slot by checking which SaveGame_ folder has recent activity
-            string actualSaveSlot = TryFindActiveSaveSlot(containerPath);
-            
-            DebugLog($"[SaveManager] SaveName: {saveName}");
-            DebugLog($"[SaveManager] ContainerPath: {containerPath}");
-            DebugLog($"[SaveManager] Detected SaveSlot: {actualSaveSlot}");
+            // LoadManager.LoadedGameFolderPath is the authoritative path to the active save folder.
+            // It is set by the game in LoadManager.StartGame() before transitioning to Main, so it
+            // is never stale from a previous session's CommitSession() write.
+            // Using LastWriteTime on SaveGame_* folders (old approach) was unreliable because
+            // CommitSession() writes the previous save folder just before the new save loads.
+            // Ref: Mono decompile: LoadManager.StartGame() — LoadedGameFolderPath = info.SavePath
+            var loadManager = UnityEngine.Object.FindObjectOfType<LoadManager>();
+            string loadedFolderPath = loadManager?.LoadedGameFolderPath ?? string.Empty;
+            string identifier = !string.IsNullOrEmpty(loadedFolderPath)
+                ? System.IO.Path.GetFileName(loadedFolderPath.TrimEnd('/', '\\'))
+                : saveManager.SaveName;
 
-            // Use the save slot name if found, otherwise fall back to SaveName
-            string identifier = !string.IsNullOrEmpty(actualSaveSlot) ? actualSaveSlot : saveName;
+            DebugLog($"[SaveManager] LoadedGameFolderPath: {loadedFolderPath}");
+            DebugLog($"[SaveManager] Resolved identifier: {identifier}");
+
             _currentSaveIdentifier = identifier;
             
             // Check if this is a fresh save (tutorial was just played)
@@ -411,6 +432,16 @@ namespace AbsurdelyBetterDelivery
             DeliveryHistoryManager.Initialize(identifier);
             RecurringOrderService.Initialize(identifier);
             WelcomeMessageService.Initialize(identifier);
+
+            // Subscribe to the game's save-complete event so we can track whether the player
+            // saved this session. CommitSession() uses this to decide whether to keep or roll
+            // back history changes when the player returns to the menu.
+            // Ref: Mono decompile: SaveManager.onSaveComplete (UnityEvent)
+            // Verified in IL2CPP: field name 'onSaveComplete'
+            if (saveManager.onSaveComplete != null)
+            {
+                saveManager.onSaveComplete.AddListener((UnityEngine.Events.UnityAction)DeliveryHistoryManager.OnGameSaved);
+            }
             
             // Initialize multiplayer system
             MultiplayerManager.Initialize();
@@ -419,40 +450,6 @@ namespace AbsurdelyBetterDelivery
             {
                 DeliveryHistoryUI.RefreshHistoryUI(DeliveryAppInstance);
             }
-        }
-
-        /// <summary>
-        /// Attempts to find the active save slot by checking for recent file activity.
-        /// </summary>
-        private string TryFindActiveSaveSlot(string containerPath)
-        {
-            try
-            {
-                var directory = new System.IO.DirectoryInfo(containerPath);
-                if (!directory.Exists) return "";
-
-                // Find all SaveGame_ folders
-                var saveGameFolders = directory.GetDirectories("SaveGame_*");
-                
-                if (saveGameFolders.Length == 0) return "";
-
-                // Find the most recently modified SaveGame_ folder
-                var mostRecent = saveGameFolders
-                    .OrderByDescending(d => d.LastWriteTime)
-                    .FirstOrDefault();
-
-                if (mostRecent != null)
-                {
-                    DebugLog($"[SaveManager] Found recent save folder: {mostRecent.Name} (LastWriteTime: {mostRecent.LastWriteTime})");
-                    return mostRecent.Name;
-                }
-            }
-            catch (Exception ex)
-            {
-                LoggerInstance.Warning($"[SaveManager] Error finding active save slot: {ex.Message}");
-            }
-
-            return "";
         }
 
         #endregion
@@ -552,6 +549,9 @@ namespace AbsurdelyBetterDelivery
 
                 // Clear current in-memory data
                 DeliveryHistoryManager.History.Clear();
+                // Recurring order runtime state (cooldowns, round-robin) may hold references
+                // to records that no longer exist after a full data wipe.
+                RecurringOrderService.Reset();
 
                 LoggerInstance.Msg($"[DataManagement] Removed {historyFiles.Length} history files and {recurringFiles.Length} recurring order files.");
             }
@@ -564,6 +564,37 @@ namespace AbsurdelyBetterDelivery
         #endregion
 
         #region Icon Loading
+
+        /// <summary>
+        /// Detects other mods that require ABD to adapt its behaviour.
+        /// Called once at the very start of <see cref="OnInitializeMelon"/> so results are
+        /// available before any UI is built.
+        /// </summary>
+        private void DetectCompatibilityMods()
+        {
+            // Scan the file names of all registered melon assemblies. Using the DLL file name
+            // is the most reliable approach in MelonLoader IL2CPP: MelonAssembly.Assembly can
+            // be null at init time, and RegisteredMelons may not be populated yet at this stage.
+            // Falling back to scanning the Mods folder directly is the easiest guarantee.
+            try
+            {
+                string modsFolder = System.IO.Path.Combine(
+                    System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location)!);
+
+                bool found = System.IO.File.Exists(
+                    System.IO.Path.Combine(modsFolder, "TimeButLogical.dll"));
+
+                Is24HourMode = found;
+                LoggerInstance.Msg(found
+                    ? "[Compat] TimeButLogical.dll detected — time picker will use 24h format."
+                    : "[Compat] TimeButLogical.dll not found — time picker will use 12h AM/PM format.");
+            }
+            catch (Exception ex)
+            {
+                Is24HourMode = false;
+                LoggerInstance.Warning($"[Compat] Compatibility detection failed: {ex.Message}");
+            }
+        }
 
         /// <summary>
         /// Loads all icon sprites from embedded resources.

@@ -573,27 +573,8 @@ namespace AbsurdelyBetterDelivery.Services
             }
         }
 
-        /// <summary>
-        /// Normalizes text for robust matching (case-insensitive, alphanumeric only).
-        /// </summary>
-        private static string NormalizeForMatch(string value)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return string.Empty;
-            }
-
-            var builder = new StringBuilder(value.Length);
-            foreach (char character in value)
-            {
-                if (char.IsLetterOrDigit(character))
-                {
-                    builder.Append(char.ToLowerInvariant(character));
-                }
-            }
-
-            return builder.ToString();
-        }
+        // Delegates to the shared utility — single implementation lives in NameFormatter.
+        private static string NormalizeForMatch(string value) => NameFormatter.NormalizeForMatch(value);
 
         /// <summary>
         /// Sets the loading dock dropdown.

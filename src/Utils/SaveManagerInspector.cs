@@ -75,25 +75,5 @@ namespace AbsurdelyBetterDelivery.Utils
             }
         }
 
-        private static void TryCallMethod(object obj, string methodName)
-        {
-            try
-            {
-                var method = obj.GetType().GetMethod(methodName, BindingFlags.Public | BindingFlags.Instance, null, Type.EmptyTypes, null);
-                if (method != null)
-                {
-                    var result = method.Invoke(obj, null);
-                    MelonLogger.Msg($"[SaveInspector]   ✓ {methodName}(): {result}");
-                }
-                else
-                {
-                    MelonLogger.Msg($"[SaveInspector]   ✗ {methodName}(): Not found");
-                }
-            }
-            catch (Exception ex)
-            {
-                MelonLogger.Msg($"[SaveInspector]   ✗ {methodName}(): Error - {ex.Message}");
-            }
-        }
     }
 }

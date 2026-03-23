@@ -39,6 +39,13 @@ namespace AbsurdelyBetterDelivery.Models
         /// Day of week to execute, if applicable (for Weekly).
         /// </summary>
         public DayOfWeek? DayOfWeek { get; set; }
+
+        /// <summary>
+        /// Timestamp of the last successful execution. Used to prevent duplicate triggers
+        /// after a save reload (without this, <see cref="RecurringSettings.LastExecuted"/> is
+        /// lost and the order fires immediately on the next matching minute).
+        /// </summary>
+        public DateTime? LastExecuted { get; set; }
     }
 
     /// <summary>

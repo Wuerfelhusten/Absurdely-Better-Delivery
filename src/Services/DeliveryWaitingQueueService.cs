@@ -8,6 +8,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using AbsurdelyBetterDelivery.Utils;
 using AbsurdelyBetterDelivery.Models;
 using AbsurdelyBetterDelivery.UI;
 using Il2CppScheduleOne.Delivery;
@@ -492,7 +493,7 @@ namespace AbsurdelyBetterDelivery.Services
                     return;
                 }
 
-                MSGConversation? conversation = ResolveConversationForStore(queuedRecord.StoreName);
+                MSGConversation? conversation = DeliveryArrivalMessageService.GetConversationForStore(queuedRecord.StoreName);
 
                 if (conversation == null)
                 {
@@ -501,9 +502,11 @@ namespace AbsurdelyBetterDelivery.Services
                     return;
                 }
 
+                // Format the raw PropertyCode into a human-readable name (e.g. "DocksWarehouse" → "Docks Warehouse").
+                // Ref: NameFormatter.FormatDestination — covers known codes and title-cases the rest.
                 string destination = string.IsNullOrWhiteSpace(queuedRecord.Destination)
                     ? "your location"
-                    : queuedRecord.Destination;
+                    : Utils.NameFormatter.FormatDestination(queuedRecord.Destination);
 
                 string normalizedStore = NormalizeForMatch(queuedRecord.StoreName);
                 bool includeStoreName = IsGasStore(normalizedStore) || IsHardwareStore(normalizedStore);
@@ -520,199 +523,8 @@ namespace AbsurdelyBetterDelivery.Services
             }
         }
 
-        private static MSGConversation? ResolveConversationForStore(string storeName)
-        {
-            string normalizedStore = NormalizeForMatch(storeName);
-            if (string.IsNullOrWhiteSpace(normalizedStore))
-            {
-                return null;
-            }
-
-            var conversations = MessagesApp.Conversations;
-            if (conversations != null)
-            {
-                for (int i = 0; i < conversations.Count; i++)
-                {
-                    MSGConversation candidate = conversations[i];
-                    if (candidate == null)
-                    {
-                        continue;
-                    }
-
-                    int score = ScoreConversation(candidate, normalizedStore);
-                    if (score >= 60)
-                    {
-                        return candidate;
-                    }
-                }
-            }
-
-            NPC? npc = ResolveNpcByShopInterface(storeName) ?? ResolveNpcByNameOrId(storeName);
-            if (npc == null)
-            {
-                return null;
-            }
-
-            if (npc.MSGConversation == null)
-            {
-                npc.CreateMessageConversation();
-            }
-
-            if (npc.MSGConversation != null)
-            {
-                npc.MSGConversation.SetIsKnown(true);
-            }
-
-            return npc.MSGConversation;
-        }
-
-        private static int ScoreConversation(MSGConversation conversation, string normalizedStore)
-        {
-            int best = ScoreNamePair(normalizedStore, NormalizeForMatch(conversation.contactName));
-            if (conversation.sender != null)
-            {
-                best = Math.Max(best, ScoreNamePair(normalizedStore, NormalizeForMatch(conversation.sender.fullName)));
-                best = Math.Max(best, ScoreNamePair(normalizedStore, NormalizeForMatch(conversation.sender.ID)));
-            }
-
-            return best;
-        }
-
-        private static int ScoreNamePair(string left, string right)
-        {
-            if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
-            {
-                return 0;
-            }
-
-            if (left.Equals(right, StringComparison.Ordinal))
-            {
-                return 100;
-            }
-
-            if (left.Contains(right, StringComparison.Ordinal) || right.Contains(left, StringComparison.Ordinal))
-            {
-                return 70;
-            }
-
-            return 0;
-        }
-
-        private static NPC? ResolveNpcByShopInterface(string storeName)
-        {
-            var registry = NPCManager.NPCRegistry;
-            if (registry == null)
-            {
-                return null;
-            }
-
-            string normalizedStore = NormalizeForMatch(storeName);
-            for (int i = 0; i < registry.Count; i++)
-            {
-                NPC npc = registry[i];
-                if (npc == null)
-                {
-                    continue;
-                }
-
-                object? shopInterface = GetMemberValue(npc, "ShopInterface");
-                if (shopInterface == null)
-                {
-                    continue;
-                }
-
-                object? shopNameValue = GetMemberValue(shopInterface, "ShopName");
-                string shopName = NormalizeForMatch(shopNameValue?.ToString() ?? string.Empty);
-                if (!string.IsNullOrWhiteSpace(shopName) &&
-                    (shopName.Equals(normalizedStore, StringComparison.Ordinal) ||
-                     shopName.Contains(normalizedStore, StringComparison.Ordinal) ||
-                     normalizedStore.Contains(shopName, StringComparison.Ordinal)))
-                {
-                    return npc;
-                }
-            }
-
-            return null;
-        }
-
-        private static NPC? ResolveNpcByNameOrId(string storeName)
-        {
-            var registry = NPCManager.NPCRegistry;
-            if (registry == null)
-            {
-                return null;
-            }
-
-            string normalizedStore = NormalizeForMatch(storeName);
-            for (int i = 0; i < registry.Count; i++)
-            {
-                NPC npc = registry[i];
-                if (npc == null)
-                {
-                    continue;
-                }
-
-                string npcName = NormalizeForMatch(npc.fullName);
-                string npcId = NormalizeForMatch(npc.ID);
-                if ((!string.IsNullOrWhiteSpace(npcName) &&
-                     (npcName.Equals(normalizedStore, StringComparison.Ordinal) ||
-                      npcName.Contains(normalizedStore, StringComparison.Ordinal) ||
-                      normalizedStore.Contains(npcName, StringComparison.Ordinal))) ||
-                    (!string.IsNullOrWhiteSpace(npcId) &&
-                     (npcId.Equals(normalizedStore, StringComparison.Ordinal) ||
-                      npcId.Contains(normalizedStore, StringComparison.Ordinal) ||
-                      normalizedStore.Contains(npcId, StringComparison.Ordinal))))
-                {
-                    return npc;
-                }
-            }
-
-            return null;
-        }
-
-        private static object? GetMemberValue(object instance, string memberName)
-        {
-            try
-            {
-                var type = instance.GetType();
-                var property = type.GetProperty(memberName);
-                if (property != null)
-                {
-                    return property.GetValue(instance);
-                }
-
-                var field = type.GetField(memberName);
-                if (field != null)
-                {
-                    return field.GetValue(instance);
-                }
-            }
-            catch
-            {
-                // Best effort reflection access.
-            }
-
-            return null;
-        }
-
-        private static string NormalizeForMatch(string value)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return string.Empty;
-            }
-
-            var buffer = new StringBuilder(value.Length);
-            foreach (char c in value)
-            {
-                if (char.IsLetterOrDigit(c))
-                {
-                    buffer.Append(char.ToLowerInvariant(c));
-                }
-            }
-
-            return buffer.ToString();
-        }
+        // Delegates to the shared utility — single implementation lives in NameFormatter.
+        private static string NormalizeForMatch(string value) => NameFormatter.NormalizeForMatch(value);
 
         private static bool IsGasStore(string normalizedStore)
         {

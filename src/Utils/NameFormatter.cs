@@ -7,6 +7,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Text;
 
 namespace AbsurdelyBetterDelivery.Utils
 {
@@ -90,6 +91,43 @@ namespace AbsurdelyBetterDelivery.Utils
         public static string FormatItemName(string? itemName)
         {
             return FormatName(itemName);
+        }
+
+        #endregion
+
+        #region Internal Matching Utility
+
+        /// <summary>
+        /// Normalizes a string for robust matching: lowercases, strips diacritics, and keeps only alphanumeric characters.
+        /// This is the single authoritative implementation used across all services.
+        /// Includes Unicode FormD decomposition so accented characters (e.g. "café" → "cafe") match correctly.
+        /// </summary>
+        public static string NormalizeForMatch(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return string.Empty;
+            }
+
+            // FormD decomposes characters like 'é' into 'e' + combining acute accent.
+            // The loop then discards NonSpacingMark characters (the accent part).
+            string decomposed = value.Normalize(NormalizationForm.FormD);
+            var builder = new StringBuilder(decomposed.Length);
+            for (int i = 0; i < decomposed.Length; i++)
+            {
+                char c = char.ToLowerInvariant(decomposed[i]);
+                if (CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.NonSpacingMark)
+                {
+                    continue;
+                }
+
+                if (char.IsLetterOrDigit(c))
+                {
+                    builder.Append(c);
+                }
+            }
+
+            return builder.ToString();
         }
 
         #endregion

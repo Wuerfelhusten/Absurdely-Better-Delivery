@@ -42,9 +42,6 @@ namespace AbsurdelyBetterDelivery.Multiplayer
 
         #region Private Fields
 
-#pragma warning disable CS0414 // Field is assigned but never read (false positive - used for state tracking)
-        private static bool _initialized = false;
-#pragma warning restore CS0414
         private static bool _hasNetworkManager = false;
         private static bool _componentRegistered = false;
 
@@ -158,8 +155,7 @@ namespace AbsurdelyBetterDelivery.Multiplayer
             IsMultiplayer = false;
             IsHost = false;
             PlayerCount = 1;
-            _initialized = false;
-            
+
             AbsurdelyBetterDeliveryMod.DebugLog("[Multiplayer] Shutdown complete");
         }
 

@@ -11,6 +11,7 @@ using System.Text.Json;
 using AbsurdelyBetterDelivery.Models;
 using AbsurdelyBetterDelivery.Multiplayer;
 using AbsurdelyBetterDelivery.Patches;
+using AbsurdelyBetterDelivery.Utils;
 using AbsurdelyBetterDelivery.Services;
 using AbsurdelyBetterDelivery.UI;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
@@ -32,6 +33,14 @@ namespace AbsurdelyBetterDelivery.Managers
 
         private static string _currentSaveName = "Default";
         private static bool _sessionInitialized;
+
+        /// <summary>
+        /// Set to true when the game fires its own onSaveComplete event during a session.
+        /// If the player returns to menu without having saved, we roll history back to the
+        /// session-start snapshot so that unsaved deliveries don't persist.
+        /// </summary>
+        private static bool _gameSavedThisSession;
+
         private static readonly Dictionary<string, Queue<string>> PendingSuppressedRebuyByLocation = new(StringComparer.OrdinalIgnoreCase);
 
         #endregion
@@ -71,6 +80,10 @@ namespace AbsurdelyBetterDelivery.Managers
             }
 
             _currentSaveName = saveName;
+            _gameSavedThisSession = false;
+
+            // Clear per-session rebuy suppression state so it does not bleed into a new save.
+            PendingSuppressedRebuyByLocation.Clear();
 
             RecoverHistoryAfterUnexpectedExit();
             LoadHistory();
@@ -82,11 +95,31 @@ namespace AbsurdelyBetterDelivery.Managers
         /// Commits the current session history and clears crash-recovery backup.
         /// Call this on graceful exits (menu return / application quit).
         /// </summary>
+        /// <remarks>
+        /// If the game was saved at least once this session, the current history (including
+        /// new deliveries) is kept as-is on disk. If the game was never saved, we restore
+        /// history to the session-start snapshot so that deliveries from an unsaved session
+        /// do not bleed into future loads of the same save slot.
+        /// </remarks>
         public static void CommitSession()
         {
             try
             {
-                SaveHistory();
+                if (!_gameSavedThisSession && File.Exists(SessionBackupPath))
+                {
+                    // The game was never saved this session; discard any history changes made
+                    // since the session started by restoring the start-of-session snapshot.
+                    string backupJson = File.ReadAllText(SessionBackupPath);
+                    List<DeliveryRecord> baseline = DeserializeHistory(backupJson);
+                    History = baseline;
+                    SaveHistory();
+                    MelonLogger.Msg($"[History] Session ended without a game save — rolled back to session-start baseline ({baseline.Count} entries) for save '{_currentSaveName}'.");
+                }
+                else
+                {
+                    // Game was saved; current history is already up-to-date on disk.
+                    SaveHistory();
+                }
 
                 if (File.Exists(SessionBackupPath))
                 {
@@ -94,11 +127,26 @@ namespace AbsurdelyBetterDelivery.Managers
                 }
 
                 _sessionInitialized = false;
+                _gameSavedThisSession = false;
             }
             catch (Exception ex)
             {
                 MelonLogger.Warning($"[History] Failed to commit session: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// Called when the game fires its onSaveComplete event.
+        /// Marks that at least one game save has occurred this session so
+        /// CommitSession() will keep the current history rather than rolling back.
+        /// </summary>
+        public static void OnGameSaved()
+        {
+            _gameSavedThisSession = true;
+            // Update the session backup to the newly-saved state so that a subsequent
+            // crash would recover to the most recent game-save point, not the session start.
+            CreateSessionBackupSnapshot();
+            MelonLogger.Msg($"[History] Game saved — session checkpoint updated ({History.Count} entries) for save '{_currentSaveName}'.");
         }
 
         /// <summary>
@@ -411,24 +459,8 @@ namespace AbsurdelyBetterDelivery.Managers
             return $"{NormalizeForMatch(storeName)}|{NormalizeForMatch(destination)}|{loadingDockIndex}";
         }
 
-        private static string NormalizeForMatch(string value)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return string.Empty;
-            }
-
-            var buffer = new System.Text.StringBuilder(value.Length);
-            foreach (char c in value)
-            {
-                if (char.IsLetterOrDigit(c))
-                {
-                    buffer.Append(char.ToLowerInvariant(c));
-                }
-            }
-
-            return buffer.ToString();
-        }
+        // Delegates to the shared utility — single implementation lives in NameFormatter.
+        private static string NormalizeForMatch(string value) => NameFormatter.NormalizeForMatch(value);
 
         #endregion
 
@@ -463,22 +495,8 @@ namespace AbsurdelyBetterDelivery.Managers
         /// </summary>
         private static void ExtractDestination(DeliveryInstance delivery, DeliveryRecord record)
         {
-            var destProp = delivery.GetType().GetProperty("DestinationCode");
-            if (destProp != null)
-            {
-                record.Destination = destProp.GetValue(delivery)?.ToString() ?? "";
-                return;
-            }
-
-            // Try alternative property names
-            var altProp = delivery.GetType().GetProperty("Destination")
-                ?? delivery.GetType().GetProperty("Target")
-                ?? delivery.GetType().GetProperty("DropOffPoint");
-
-            if (altProp != null)
-            {
-                record.Destination = altProp.GetValue(delivery)?.ToString() ?? "";
-            }
+            // Verified in IL2CPP: DeliveryInstance.DestinationCode is a direct field-backed property.
+            record.Destination = delivery.DestinationCode ?? string.Empty;
         }
 
         /// <summary>
@@ -486,15 +504,8 @@ namespace AbsurdelyBetterDelivery.Managers
         /// </summary>
         private static void ExtractLoadingDock(DeliveryInstance delivery, DeliveryRecord record)
         {
-            var dockProp = delivery.GetType().GetProperty("LoadingDockIndex");
-            if (dockProp != null)
-            {
-                var value = dockProp.GetValue(delivery);
-                if (value != null)
-                {
-                    record.LoadingDockIndex = (int)value;
-                }
-            }
+            // Verified in IL2CPP: DeliveryInstance.LoadingDockIndex is a direct field-backed property.
+            record.LoadingDockIndex = delivery.LoadingDockIndex;
         }
 
         /// <summary>
@@ -536,75 +547,12 @@ namespace AbsurdelyBetterDelivery.Managers
         /// </summary>
         private static DeliveryItem ParseItem(StringIntPair item)
         {
-            string name = "Unknown";
-            int quantity = 0;
-
-            try
+            // Verified in IL2CPP: StringIntPair.String and StringIntPair.Int are field-backed properties.
+            return new DeliveryItem
             {
-                var type = item.GetType();
-
-                // Try properties first
-                name = GetStringValue(type, item, "String", "Key", "Item1") ?? "Unknown";
-                quantity = GetIntValue(type, item, "Int", "Value", "Item2");
-            }
-            catch (Exception ex)
-            {
-                AbsurdelyBetterDeliveryMod.DebugLog("[History] Error parsing item: " + ex.Message);
-            }
-
-            return new DeliveryItem { Name = name, Quantity = quantity };
-        }
-
-        /// <summary>
-        /// Gets a string value from an object using multiple possible property/field names.
-        /// </summary>
-        private static string? GetStringValue(Type type, object obj, params string[] names)
-        {
-            foreach (var name in names)
-            {
-                // Try property
-                var prop = type.GetProperty(name);
-                if (prop != null)
-                {
-                    return prop.GetValue(obj)?.ToString();
-                }
-
-                // Try field
-                var field = type.GetField(name);
-                if (field != null)
-                {
-                    return field.GetValue(obj)?.ToString();
-                }
-            }
-
-            return null;
-        }
-
-        /// <summary>
-        /// Gets an int value from an object using multiple possible property/field names.
-        /// </summary>
-        private static int GetIntValue(Type type, object obj, params string[] names)
-        {
-            foreach (var name in names)
-            {
-                // Try property
-                var prop = type.GetProperty(name);
-                if (prop != null)
-                {
-                    var val = prop.GetValue(obj);
-                    if (val != null) return (int)val;
-                }
-
-                // Try field
-                var field = type.GetField(name);
-                if (field != null)
-                {
-                    var val = field.GetValue(obj);
-                    if (val != null) return (int)val;
-                }
-            }
-
-            return 0;
+                Name = item.String ?? "Unknown",
+                Quantity = item.Int
+            };
         }
 
         #endregion

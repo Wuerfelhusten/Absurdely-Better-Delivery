@@ -5,6 +5,7 @@
 // =============================================================================
 
 using System;
+using MelonLoader;
 using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.EventSystems;
@@ -19,6 +20,22 @@ namespace AbsurdelyBetterDelivery.UI
     public static class TooltipUI
     {
         private static Font? _cachedFont;
+
+        /// <summary>
+        /// Explicit ScrollRect to forward scroll events to.
+        /// Set by DeliveryHistoryUI after the custom scroll container is initialized.
+        /// Takes priority over GetComponentInParent at scroll time.
+        /// </summary>
+        private static ScrollRect? _scrollForwardTarget;
+
+        /// <summary>
+        /// Registers the ScrollRect that tooltip-equipped buttons should forward scroll events to.
+        /// Call from DeliveryHistoryUI whenever the delivery scroll rect is (re)created or torn down.
+        /// </summary>
+        public static void SetScrollForwardTarget(ScrollRect? rect)
+        {
+            _scrollForwardTarget = rect;
+        }
 
         /// <summary>
         /// Sets the font to use for tooltips.
@@ -116,6 +133,26 @@ namespace AbsurdelyBetterDelivery.UI
                 tooltipObj.SetActive(false);
             }));
             trigger.triggers.Add(exitEntry);
+
+            // Scroll forward — EventTrigger implements IScrollHandler unconditionally, which
+            // consumes scroll events and prevents them from reaching the parent ScrollRect.
+            // We forward the event explicitly:
+            //   1. Prefer the registered _scrollForwardTarget (set by DeliveryHistoryUI after init).
+            //   2. Fall back to GetComponentInParent for generic use outside the delivery UI.
+            // In IL2CPP a direct C# cast throws InvalidCastException; TryCast<T>() is the correct pattern.
+            var scrollEntry = new EventTrigger.Entry();
+            scrollEntry.eventID = EventTriggerType.Scroll;
+            scrollEntry.callback.AddListener((UnityAction<BaseEventData>)((eventData) => {
+                var scrollRect = _scrollForwardTarget ?? target.GetComponentInParent<ScrollRect>();
+                var pointerData = eventData.TryCast<PointerEventData>();
+                // DIAGNOSTIC — always log so we can see if the callback fires and what state it has.
+                MelonLogger.Msg($"[TooltipUI] Scroll cb: rect={scrollRect?.name ?? "null"}, delta={pointerData?.scrollDelta.ToString() ?? "null"}, target={target?.name ?? "null"}");
+                if (scrollRect != null && pointerData != null)
+                {
+                    scrollRect.OnScroll(pointerData);
+                }
+            }));
+            trigger.triggers.Add(scrollEntry);
         }
     }
 }

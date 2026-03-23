@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
+using AbsurdelyBetterDelivery.Utils;
 using Il2CppScheduleOne.Delivery;
 using Il2CppScheduleOne.GameTime;
 using Il2CppScheduleOne.Messaging;
@@ -63,9 +64,10 @@ namespace AbsurdelyBetterDelivery.Services
                 string destinationName = ResolveDestinationName(instance);
                 int dockNumber = instance.LoadingDockIndex + 1;
                 string normalizedStore = NormalizeForMatch(storeName);
-                bool includeStoreName = IsGasStore(normalizedStore) || IsHardwareStore(normalizedStore);
+                string? displayStoreName = ResolveMessageStoreName(normalizedStore, storeName);
+                bool includeStoreName = displayStoreName != null;
                 string messageText = includeStoreName
-                    ? $"Your {storeName} delivery has arrived at {destinationName} (Dock {dockNumber})."
+                    ? $"Your {displayStoreName} delivery has arrived at {destinationName} (Dock {dockNumber})."
                     : $"Your delivery has arrived at {destinationName} (Dock {dockNumber}).";
 
                 Message message = new(messageText, Message.ESenderType.Other, _endOfGroup: true);
@@ -300,6 +302,19 @@ namespace AbsurdelyBetterDelivery.Services
             if (normalizedStore.Contains("dan", StringComparison.Ordinal))
             {
                 return FindNpcByKeyword("dan");
+            }
+
+            if (normalizedStore.Contains("herbert", StringComparison.Ordinal))
+            {
+                return FindNpcByKeyword("herbert");
+            }
+
+            // "Armory" is Stan's shop (added by FurnitureDelivery). The store name contains
+            // no reference to the messenger NPC, so we map it explicitly to Manny Oakfield.
+            // "stan" also matches in case another mod names the shop differently.
+            if (normalizedStore.Contains("armory", StringComparison.Ordinal) || normalizedStore.Contains("stan", StringComparison.Ordinal))
+            {
+                return FindNpcByKeyword("manny");
             }
 
             if (normalizedStore.Contains("hank", StringComparison.Ordinal) || normalizedStore.Contains("handy", StringComparison.Ordinal))
@@ -651,30 +666,140 @@ namespace AbsurdelyBetterDelivery.Services
                    normalizedStore.Contains("tool", StringComparison.Ordinal);
         }
 
-        private static string NormalizeForMatch(string? value)
+        /// <summary>
+        /// Returns the store label to use in the delivery arrival message, or <c>null</c> if
+        /// the message should be generic ("Your delivery has arrived...").
+        ///
+        /// Rules:
+        ///   • Gas stores      → original store name (e.g. "Cheetah Gas Station")
+        ///   • Hardware stores → original store name (e.g. "Handy Hardware")
+        ///   • FurnitureDelivery — Armory (Stan)       → "armory"
+        ///   • FurnitureDelivery — Curiosities (Herbert) → "Bleuball's Curiosities"
+        ///   • FurnitureDelivery — Oscar's Furniture   → "furniture"
+        ///   • Everything else → null (generic message)
+        /// </summary>
+        private static string? ResolveMessageStoreName(string normalizedStore, string originalStoreName)
         {
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return string.Empty;
-            }
+            if (IsGasStore(normalizedStore))
+                return originalStoreName;
 
-            string decomposed = value.Normalize(NormalizationForm.FormD);
-            var builder = new StringBuilder(decomposed.Length);
-            for (int i = 0; i < decomposed.Length; i++)
-            {
-                char c = char.ToLowerInvariant(decomposed[i]);
-                if (CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.NonSpacingMark)
-                {
-                    continue;
-                }
+            if (IsHardwareStore(normalizedStore))
+                return "hardware";
 
-                if (char.IsLetterOrDigit(c))
-                {
-                    builder.Append(c);
-                }
-            }
+            // FurnitureDelivery: Stan's Armory
+            if (normalizedStore.Contains("armory", StringComparison.Ordinal) ||
+                normalizedStore.Contains("stan", StringComparison.Ordinal))
+                return "armory";
 
-            return builder.ToString();
+            // FurnitureDelivery: Herbert's Curiosities — branded as Bleuball's in-universe
+            if (normalizedStore.Contains("curiosit", StringComparison.Ordinal) ||
+                normalizedStore.Contains("herbert", StringComparison.Ordinal))
+                return "Bleuball's Curiosities";
+
+            // FurnitureDelivery: Oscar's Furniture
+            if (normalizedStore.Contains("oscar", StringComparison.Ordinal) ||
+                (normalizedStore.Contains("furniture", StringComparison.Ordinal) &&
+                 !normalizedStore.Contains("dan", StringComparison.Ordinal)))
+                return "furniture";
+
+            return null;
         }
+
+        /// <summary>
+        /// Clears all per-session runtime state. Call when returning to the main menu or
+        /// when a new save is loaded to prevent stale data from bleeding across sessions.
+        /// </summary>
+        public static void Reset()
+        {
+            CustomConversations.Clear();
+            ReservedNpcIds.Clear();
+            NotifiedArrivalDeliveryIds.Clear();
+        }
+
+        /// <summary>
+        /// Resolves the messaging conversation for the given store name without requiring a
+        /// <see cref="Il2CppScheduleOne.Delivery.DeliveryInstance"/>. Used by the waiting
+        /// queue service to send queued messages before the delivery is underway.
+        /// </summary>
+        /// <param name="storeName">Raw store name (e.g. "Armory", "Dan's Furniture").</param>
+        /// <returns>
+        /// An <see cref="MSGConversation"/> that can receive messages, or <c>null</c> if none
+        /// could be resolved.
+        /// </returns>
+        public static MSGConversation? GetConversationForStore(string storeName)
+        {
+            string normalizedStore = NormalizeForMatch(storeName);
+            if (string.IsNullOrWhiteSpace(normalizedStore))
+            {
+                return null;
+            }
+
+            // Gas stores: prefer shift-aware NPC selection.
+            if (IsGasStore(normalizedStore))
+            {
+                NPC? gasNpc = ResolveGasMarketNpcByShift(normalizedStore)
+                              ?? ResolveNpcByShopInterface(storeName)
+                              ?? ResolveNpcForStore(storeName);
+                if (gasNpc != null)
+                {
+                    if (gasNpc.MSGConversation == null)
+                    {
+                        gasNpc.CreateMessageConversation();
+                    }
+
+                    if (gasNpc.MSGConversation != null)
+                    {
+                        gasNpc.MSGConversation.SetIsKnown(true);
+                        return gasNpc.MSGConversation;
+                    }
+                }
+            }
+
+            // Known store NPCs: explicit keyword mapping (armory→manny, dan, herbert, oscar, hank).
+            // Ref: DeliveryArrivalMessageService.ResolveKnownStoreNpc
+            NPC? knownNpc = ResolveKnownStoreNpc(normalizedStore);
+            if (knownNpc != null)
+            {
+                if (knownNpc.MSGConversation == null)
+                {
+                    knownNpc.CreateMessageConversation();
+                }
+
+                if (knownNpc.MSGConversation != null)
+                {
+                    knownNpc.MSGConversation.SetIsKnown(true);
+                    return knownNpc.MSGConversation;
+                }
+            }
+
+            // Score existing conversations in the messages app.
+            MSGConversation? existing = FindBestConversationForStore(normalizedStore);
+            if (existing != null)
+            {
+                existing.SetIsKnown(true);
+                return existing;
+            }
+
+            // Last resort: direct NPC lookup via shop interface or name/ID.
+            NPC? npc = ResolveNpcByShopInterface(storeName) ?? ResolveNpcForStore(storeName);
+            if (npc != null)
+            {
+                if (npc.MSGConversation == null)
+                {
+                    npc.CreateMessageConversation();
+                }
+
+                if (npc.MSGConversation != null)
+                {
+                    npc.MSGConversation.SetIsKnown(true);
+                    return npc.MSGConversation;
+                }
+            }
+
+            return null;
+        }
+
+        // Delegates to the shared utility — single implementation lives in NameFormatter.
+        private static string NormalizeForMatch(string? value) => NameFormatter.NormalizeForMatch(value);
     }
 }

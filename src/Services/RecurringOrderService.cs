@@ -12,6 +12,7 @@ using System.Text.Json;
 using AbsurdelyBetterDelivery.Managers;
 using AbsurdelyBetterDelivery.Models;
 using AbsurdelyBetterDelivery.Multiplayer;
+using AbsurdelyBetterDelivery.Utils;
 using Il2CppScheduleOne.GameTime;
 using Il2CppScheduleOne.UI.Phone.Delivery;
 using MelonLoader;
@@ -190,7 +191,10 @@ namespace AbsurdelyBetterDelivery.Services
                             RecurringType = record.RecurringSettings.Type,
                             Hour = record.RecurringSettings.Hour,
                             Minute = record.RecurringSettings.Minute,
-                            DayOfWeek = record.RecurringSettings.DayOfWeek
+                            DayOfWeek = record.RecurringSettings.DayOfWeek,
+                            // Persist LastExecuted so that duplicate triggers are prevented
+                            // across save reloads (ref: Bug #1).
+                            LastExecuted = record.RecurringSettings.LastExecuted
                         });
                     }
                 }
@@ -241,7 +245,10 @@ namespace AbsurdelyBetterDelivery.Services
                             Type = orderData.RecurringType,
                             Hour = orderData.Hour ?? 8,
                             Minute = orderData.Minute ?? 0,
-                            DayOfWeek = orderData.DayOfWeek ?? DayOfWeek.Monday
+                            DayOfWeek = orderData.DayOfWeek ?? DayOfWeek.Monday,
+                            // Restore LastExecuted so HasOrderedRecently() skips the trigger
+                            // when the game time still matches the scheduled minute on load.
+                            LastExecuted = orderData.LastExecuted
                         };
                         restoredCount++;
                     }
@@ -694,27 +701,8 @@ namespace AbsurdelyBetterDelivery.Services
             return app;
         }
 
-        /// <summary>
-        /// Normalizes text for robust matching (case-insensitive, alphanumeric only).
-        /// </summary>
-        private static string NormalizeForMatch(string value)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return string.Empty;
-            }
-
-            var buffer = new System.Text.StringBuilder(value.Length);
-            foreach (char c in value)
-            {
-                if (char.IsLetterOrDigit(c))
-                {
-                    buffer.Append(char.ToLowerInvariant(c));
-                }
-            }
-
-            return buffer.ToString();
-        }
+        // Delegates to the shared utility — single implementation lives in NameFormatter.
+        private static string NormalizeForMatch(string value) => NameFormatter.NormalizeForMatch(value);
 
         #endregion
     }

@@ -59,10 +59,14 @@ namespace AbsurdelyBetterDelivery.UI
         private static readonly string[] DayNames = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
 
         /// <summary>
-        /// Formats hour and minute to 12-hour AM/PM format.
+        /// Formats hour and minute to the correct display format:
+        /// 24-hour (HH:mm) when TimeButLogical is installed, 12-hour AM/PM otherwise.
         /// </summary>
         public static string FormatTimeAmPm(int hour, int minute)
         {
+            if (AbsurdelyBetterDeliveryMod.Is24HourMode)
+                return $"{hour:D2}:{minute:D2}";
+
             string period = hour >= 12 ? "PM" : "AM";
             int displayHour = hour % 12;
             if (displayHour == 0) displayHour = 12;
@@ -373,10 +377,13 @@ namespace AbsurdelyBetterDelivery.UI
                 UpdateTimeDisplay();
             });
 
-            // Hour display (12-hour format)
-            int displayHour = _selectedHour % 12;
-            if (displayHour == 0) displayHour = 12;
-            _hourText = CreatePickerValue(row.transform, displayHour.ToString(), 30f, font);
+            bool use24h = AbsurdelyBetterDeliveryMod.Is24HourMode;
+
+            // Hour display — 24h shows zero-padded 00–23, 12h shows 1–12
+            string initialHour = use24h
+                ? _selectedHour.ToString("D2")
+                : ((_selectedHour % 12) == 0 ? "12" : (_selectedHour % 12).ToString());
+            _hourText = CreatePickerValue(row.transform, initialHour, use24h ? 40f : 30f, font);
 
             // Hour +
             CreatePickerButton(row.transform, "+", font, () => {
@@ -402,17 +409,21 @@ namespace AbsurdelyBetterDelivery.UI
                 UpdateTimeDisplay();
             });
 
-            // Spacer
-            CreatePickerLabel(row.transform, "", 5f, font);
+            // AM/PM elements — omitted entirely in 24h mode
+            if (!use24h)
+            {
+                // Spacer
+                CreatePickerLabel(row.transform, "", 5f, font);
 
-            // AM/PM toggle
-            _amPmText = CreatePickerValue(row.transform, _selectedHour >= 12 ? "PM" : "AM", 35f, font);
+                // AM/PM display
+                _amPmText = CreatePickerValue(row.transform, _selectedHour >= 12 ? "PM" : "AM", 35f, font);
 
-            // AM/PM toggle button
-            CreatePickerButton(row.transform, "↕", font, () => {
-                _selectedHour = (_selectedHour + 12) % 24;
-                UpdateTimeDisplay();
-            });
+                // AM/PM toggle button
+                CreatePickerButton(row.transform, "↕", font, () => {
+                    _selectedHour = (_selectedHour + 12) % 24;
+                    UpdateTimeDisplay();
+                });
+            }
         }
 
         private static void CreateDayPicker(Transform parent, Font? font)
@@ -625,12 +636,20 @@ namespace AbsurdelyBetterDelivery.UI
 
         private static void UpdateTimeDisplay()
         {
-            int displayHour = _selectedHour % 12;
-            if (displayHour == 0) displayHour = 12;
-            
-            if (_hourText != null) _hourText.text = displayHour.ToString();
+            if (AbsurdelyBetterDeliveryMod.Is24HourMode)
+            {
+                // 24h: show zero-padded hour 00–23; no AM/PM text to update
+                if (_hourText != null) _hourText.text = _selectedHour.ToString("D2");
+            }
+            else
+            {
+                int displayHour = _selectedHour % 12;
+                if (displayHour == 0) displayHour = 12;
+                if (_hourText != null) _hourText.text = displayHour.ToString();
+                if (_amPmText != null) _amPmText.text = _selectedHour >= 12 ? "PM" : "AM";
+            }
+
             if (_minuteText != null) _minuteText.text = _selectedMinute.ToString("D2");
-            if (_amPmText != null) _amPmText.text = _selectedHour >= 12 ? "PM" : "AM";
         }
 
         private static void UpdateDayDisplay()

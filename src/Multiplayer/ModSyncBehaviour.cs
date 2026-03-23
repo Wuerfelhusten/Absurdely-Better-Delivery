@@ -160,15 +160,6 @@ namespace AbsurdelyBetterDelivery.Multiplayer
         }
 
         /// <summary>
-        /// Sets up Steam P2P message handlers.
-        /// </summary>
-        private void RegisterBroadcastHandlers()
-        {
-            // Steam P2P polling is done in Update() via SteamP2PSync.PollMessages()
-            AbsurdelyBetterDeliveryMod.DebugLog("[ModSync] Steam P2P sync system ready");
-        }
-
-        /// <summary>
         /// Delayed request for full state from server.
         /// </summary>
         private void DelayedFullStateRequest()
@@ -238,24 +229,6 @@ namespace AbsurdelyBetterDelivery.Multiplayer
             }
         }
         
-        /// <summary>
-        /// Gets a unique client identifier.
-        /// </summary>
-        private string GetClientId()
-        {
-            // Use a hash of the local player name or connection ID
-            try
-            {
-                if (_networkManager?.ClientManager?.Connection != null)
-                {
-                    return _networkManager.ClientManager.Connection.ClientId.ToString();
-                }
-            }
-            catch { }
-            
-            return Environment.MachineName.GetHashCode().ToString("X8");
-        }
-
         /// <summary>
         /// Broadcasts a message from server to all clients via Steam P2P.
         /// </summary>

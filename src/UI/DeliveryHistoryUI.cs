@@ -29,6 +29,8 @@ namespace AbsurdelyBetterDelivery.UI
         private static GameObject? _historyContainer;
         private static ScrollRect? _deliveriesScrollRect;
         private static bool _scrollRectInitialized;
+        /// <summary>When true, the next <see cref="RefreshHistoryUI"/> call scrolls to the top instead of restoring the previous position.</summary>
+        private static bool _scrollToTopOnNextRefresh;
         
         private static Dictionary<string, (Text? timeText, Text statusPillText, Image statusPillImg, DeliveryInstance delivery)> _activeDeliveryCards
             = new Dictionary<string, (Text?, Text, Image, DeliveryInstance)>();
@@ -40,12 +42,40 @@ namespace AbsurdelyBetterDelivery.UI
         #region Public API
 
         /// <summary>
+        /// Resets all static UI state so it is rebuilt cleanly on the next save load.
+        /// Must be called when leaving a save (Menu scene) to prevent stale scroll rects
+        /// and card dictionaries from bleeding into a different save session.
+        /// </summary>
+        public static void Reset()
+        {
+            _historyContainer = null;
+            _deliveriesScrollRect = null;
+            _scrollRectInitialized = false;
+            _scrollToTopOnNextRefresh = false;
+            _activeDeliveryCards.Clear();
+            _lastTimeUpdate = 0f;
+
+            // Clear the scroll forward target so stale scroll rects from a previous session
+            // don't get forwarded to after returning to menu.
+            TooltipUI.SetScrollForwardTarget(null);
+        }
+
+        /// <summary>
         /// Initializes the UI for the delivery app.
         /// </summary>
         /// <param name="app">The DeliveryApp instance.</param>
         public static void InitializeUI(DeliveryApp app)
         {
             RefreshHistoryUI(app);
+        }
+
+        /// <summary>
+        /// Signals that the next <see cref="RefreshHistoryUI"/> call should scroll to the top.
+        /// Called from the <c>SetOpen</c> patch when the DeliveryApp becomes visible.
+        /// </summary>
+        public static void RequestScrollToTop()
+        {
+            _scrollToTopOnNextRefresh = true;
         }
 
         /// <summary>
@@ -57,9 +87,14 @@ namespace AbsurdelyBetterDelivery.UI
             // Debug log removed to reduce spam - this is called very frequently
             _activeDeliveryCards.Clear();
             
-            // Save scroll position before refresh from the correct ScrollRect
+            // Save scroll position before refresh, unless we're instructed to jump to top on open.
             float savedScrollPosition = 1f;
-            if (_deliveriesScrollRect != null)
+            if (_scrollToTopOnNextRefresh)
+            {
+                _scrollToTopOnNextRefresh = false;
+                // Leave savedScrollPosition = 1f (top)
+            }
+            else if (_deliveriesScrollRect != null)
             {
                 savedScrollPosition = _deliveriesScrollRect.verticalNormalizedPosition;
             }
@@ -298,8 +333,9 @@ namespace AbsurdelyBetterDelivery.UI
             }
             else
             {
-                // Limit to 20 most recent
-                foreach (var record in nonFavorites.Take(20))
+                // Limit to the configured max history count so the UI matches the stored cap.
+                int displayLimit = AbsurdelyBetterDeliveryMod.MaxHistoryItems?.Value ?? 20;
+                foreach (var record in nonFavorites.Take(displayLimit))
                 {
                     DeliveryCardBuilder.CreateHistoryCard(record, _historyContainer.transform, app, font);
                 }
@@ -392,6 +428,10 @@ namespace AbsurdelyBetterDelivery.UI
             }
 
             _scrollRectInitialized = true;
+
+            // Register with TooltipUI so tooltip-equipped buttons can forward scroll events
+            // without needing a runtime GetComponentInParent traversal (which can be unreliable in IL2CPP).
+            TooltipUI.SetScrollForwardTarget(_deliveriesScrollRect);
         }
 
         #endregion

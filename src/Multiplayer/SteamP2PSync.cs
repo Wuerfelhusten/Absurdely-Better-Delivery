@@ -73,9 +73,12 @@ namespace AbsurdelyBetterDelivery.Multiplayer
             try
             {
                 _isHost = asHost;
-                
-                // Register callback for incoming P2P session requests
-                RegisterP2PCallback();
+
+                // Register callback - guard against double-registration on re-init after Shutdown.
+                if (_p2pSessionRequestCallback == null)
+                {
+                    RegisterP2PCallback();
+                }
                 
                 // Get our own Steam ID
                 var localSteamId = SteamUser.GetSteamID();
@@ -113,9 +116,14 @@ namespace AbsurdelyBetterDelivery.Multiplayer
         public static void Shutdown()
         {
             if (!_initialized) return;
-            
+
             try
             {
+                // Dispose the P2P session request callback to prevent duplicate handling
+                // if multiplayer is shut down and re-initialized in the same game session.
+                _p2pSessionRequestCallback?.Dispose();
+                _p2pSessionRequestCallback = null;
+
                 _connectedClients.Clear();
                 _initialized = false;
                 AbsurdelyBetterDeliveryMod.DebugLog("[SteamP2P] Steam P2P sync shutdown");
