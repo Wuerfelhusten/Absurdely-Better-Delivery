@@ -46,6 +46,12 @@ namespace AbsurdelyBetterDelivery.Models
         /// lost and the order fires immediately on the next matching minute).
         /// </summary>
         public DateTime? LastExecuted { get; set; }
+
+        /// <summary>
+        /// The in-game day (ElapsedDays) on which the order was last executed.
+        /// See <see cref="RecurringSettings.LastExecutedGameDay"/>.
+        /// </summary>
+        public int? LastExecutedGameDay { get; set; }
     }
 
     /// <summary>

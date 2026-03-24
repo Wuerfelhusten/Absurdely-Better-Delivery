@@ -30,6 +30,7 @@ namespace AbsurdelyBetterDelivery.Services
         #region Private Fields
 
         private static TimeManager? _timeManager;
+        private static int _lastCheckedHour = -1;
         private static int _lastCheckedMinute = -1;
         private static int _lastCheckedDay = -1;
         private static float _checkInterval = 1f; // Check every second
@@ -56,8 +57,16 @@ namespace AbsurdelyBetterDelivery.Services
         /// <summary>
         /// Path to the recurring orders JSON file for the current save.
         /// </summary>
-        private static string RecurringOrdersPath => 
+        private static string RecurringOrdersPath =>
             Path.Combine(MelonEnvironment.UserDataDirectory, $"RecurringOrders_{_currentSaveIdentifier}.json");
+
+        /// <summary>
+        /// Path to the per-session backup of the recurring orders file.
+        /// Created at session start and used to roll back if the game is not saved,
+        /// keeping recurring order record IDs in sync with the history rollback.
+        /// </summary>
+        private static string RecurringOrdersSessionBackupPath =>
+            Path.Combine(MelonEnvironment.UserDataDirectory, $"RecurringOrders_{_currentSaveIdentifier}.session.bak");
 
         #endregion
 
@@ -72,6 +81,7 @@ namespace AbsurdelyBetterDelivery.Services
         {
             _currentSaveIdentifier = saveIdentifier;
             _timeManager = null;
+            _lastCheckedHour = -1;
             _lastCheckedMinute = -1;
             _lastCheckedDay = -1;
             _initialized = true;
@@ -83,7 +93,8 @@ namespace AbsurdelyBetterDelivery.Services
             _lastAsapCandidateCount = -1;
             
             LoadRecurringOrders();
-            
+            CreateSessionBackup();
+
             AbsurdelyBetterDeliveryMod.DebugLog($"[RecurringOrders] Service initialized for save: {saveIdentifier}");
         }
 
@@ -110,6 +121,7 @@ namespace AbsurdelyBetterDelivery.Services
                     {
                         MelonLogger.Warning("[RecurringOrders] Auto-initializing service (was not initialized properly)");
                         _initialized = true;
+                        _lastCheckedHour = -1;
                         _lastCheckedMinute = -1;
                         _lastCheckedDay = -1;
                     }
@@ -133,17 +145,23 @@ namespace AbsurdelyBetterDelivery.Services
             var gameTime = GetCurrentGameTime();
             if (gameTime == null) return;
 
-            // Check if minute has changed
-            bool minuteChanged = gameTime.Value.minute != _lastCheckedMinute;
+            // Capture the previous tick position before advancing. Used by ProcessRecurringOrders
+            // to detect minutes that were skipped at high game speed.
+            var prevTime = (_lastCheckedHour, _lastCheckedMinute);
             bool dayChanged = gameTime.Value.day != _lastCheckedDay;
+            bool timeAdvanced = gameTime.Value.hour != _lastCheckedHour
+                || gameTime.Value.minute != _lastCheckedMinute
+                || dayChanged;
 
+            _lastCheckedHour = gameTime.Value.hour;
             _lastCheckedMinute = gameTime.Value.minute;
             _lastCheckedDay = gameTime.Value.day;
 
-            // Process recurring orders
-            if (minuteChanged || dayChanged)
+            // Process recurring orders if time has advanced.
+            // prevTime is forwarded so IsTimeToOrder can use a range-based missed-minute check.
+            if (timeAdvanced)
             {
-                ProcessRecurringOrders(gameTime.Value);
+                ProcessRecurringOrders(gameTime.Value, prevTime);
             }
 
             // Always check "As Soon As Possible" orders
@@ -156,6 +174,7 @@ namespace AbsurdelyBetterDelivery.Services
         public static void Reset()
         {
             _timeManager = null;
+            _lastCheckedHour = -1;
             _lastCheckedMinute = -1;
             _lastCheckedDay = -1;
             _orderCooldowns.Clear();
@@ -165,6 +184,65 @@ namespace AbsurdelyBetterDelivery.Services
             _asapRoundRobinNextByLocation.Clear();
             _lastAsapCandidateCount = -1;
             AbsurdelyBetterDeliveryMod.DebugLog("[RecurringOrders] Service reset.");
+        }
+
+        /// <summary>
+        /// Called when the game fires its own save event.
+        /// Persists any in-memory changes (e.g. <see cref="RecurringSettings.LastExecutedGameDay"/>)
+        /// and refreshes the session backup so a subsequent history rollback would restore to
+        /// this post-save state rather than the original session-start state.
+        /// </summary>
+        public static void OnGameSaved()
+        {
+            SaveRecurringOrders();
+            CreateSessionBackup();
+            AbsurdelyBetterDeliveryMod.DebugLog($"[RecurringOrders] Game saved — session checkpoint updated for save '{_currentSaveIdentifier}'.");
+        }
+
+        /// <summary>
+        /// Rolls back the persistent recurring orders file to the session-start snapshot.
+        /// Called from <see cref="Managers.DeliveryHistoryManager.CommitSession"/> when the
+        /// game was not saved, to keep record IDs in RecurringOrders_*.json in sync with
+        /// the restored history baseline.
+        /// </summary>
+        public static void RollbackSessionOrders()
+        {
+            try
+            {
+                if (File.Exists(RecurringOrdersSessionBackupPath))
+                {
+                    File.Copy(RecurringOrdersSessionBackupPath, RecurringOrdersPath, overwrite: true);
+                    File.Delete(RecurringOrdersSessionBackupPath);
+                    MelonLogger.Msg($"[RecurringOrders] Rolled back to session-start snapshot for save '{_currentSaveIdentifier}'.");
+                }
+                else if (File.Exists(RecurringOrdersPath))
+                {
+                    // No backup means there were no recurring orders at session start.
+                    // Delete the file created during the unsaved session.
+                    File.Delete(RecurringOrdersPath);
+                    MelonLogger.Msg($"[RecurringOrders] No session backup — deleted unsaved recurring orders for save '{_currentSaveIdentifier}'.");
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[RecurringOrders] Failed to rollback session orders: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Removes the session backup after a graceful, saved exit.
+        /// </summary>
+        public static void CommitSessionOrders()
+        {
+            try
+            {
+                if (File.Exists(RecurringOrdersSessionBackupPath))
+                    File.Delete(RecurringOrdersSessionBackupPath);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[RecurringOrders] Failed to commit session orders: {ex.Message}");
+            }
         }
 
         #endregion
@@ -192,9 +270,8 @@ namespace AbsurdelyBetterDelivery.Services
                             Hour = record.RecurringSettings.Hour,
                             Minute = record.RecurringSettings.Minute,
                             DayOfWeek = record.RecurringSettings.DayOfWeek,
-                            // Persist LastExecuted so that duplicate triggers are prevented
-                            // across save reloads (ref: Bug #1).
-                            LastExecuted = record.RecurringSettings.LastExecuted
+                            LastExecuted = record.RecurringSettings.LastExecuted,
+                            LastExecutedGameDay = record.RecurringSettings.LastExecutedGameDay
                         });
                     }
                 }
@@ -246,11 +323,16 @@ namespace AbsurdelyBetterDelivery.Services
                             Hour = orderData.Hour ?? 8,
                             Minute = orderData.Minute ?? 0,
                             DayOfWeek = orderData.DayOfWeek ?? DayOfWeek.Monday,
-                            // Restore LastExecuted so HasOrderedRecently() skips the trigger
-                            // when the game time still matches the scheduled minute on load.
-                            LastExecuted = orderData.LastExecuted
+                            LastExecuted = orderData.LastExecuted,
+                            LastExecutedGameDay = orderData.LastExecutedGameDay
                         };
                         restoredCount++;
+                    }
+                    else
+                    {
+                        MelonLogger.Warning(
+                            $"[RecurringOrders] Could not restore recurring order — record ID '{orderData.RecordID}' not found in history. " +
+                            $"The recurring settings for this order are lost until it is reconfigured.");
                     }
                 }
                 
@@ -259,6 +341,27 @@ namespace AbsurdelyBetterDelivery.Services
             catch (Exception ex)
             {
                 MelonLogger.Error($"[RecurringOrders] Failed to load: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Copies the current recurring orders file to the session backup path.
+        /// Called at <see cref="Initialize"/> and whenever the game saves, so that
+        /// <see cref="RollbackSessionOrders"/> can restore exactly to that baseline.
+        /// If no recurring orders file exists yet, any stale backup is removed.
+        /// </summary>
+        private static void CreateSessionBackup()
+        {
+            try
+            {
+                if (File.Exists(RecurringOrdersPath))
+                    File.Copy(RecurringOrdersPath, RecurringOrdersSessionBackupPath, overwrite: true);
+                else if (File.Exists(RecurringOrdersSessionBackupPath))
+                    File.Delete(RecurringOrdersSessionBackupPath);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[RecurringOrders] Failed to create session backup: {ex.Message}");
             }
         }
 
@@ -285,9 +388,12 @@ namespace AbsurdelyBetterDelivery.Services
                 int hour = minuteOfDay / 60;
                 int minute = minuteOfDay % 60;
 
-                // Get day of week (0 = Sunday in C#)
-                // Game starts on a specific day, we need to calculate current day
-                DayOfWeek dayOfWeek = (DayOfWeek)(elapsedDays % 7);
+                // Convert the game's EDay index to System.DayOfWeek.
+                // EDay (ScheduleOne.GameTime): Monday=0, Tuesday=1, ..., Saturday=5, Sunday=6
+                // DayOfWeek (System):          Sunday=0, Monday=1, ..., Saturday=6
+                // Mapping: eDayIndex → (eDayIndex + 1) % 7
+                // Verified against: Mono decompile ScheduleOne.GameTime.EDay
+                DayOfWeek dayOfWeek = (DayOfWeek)((elapsedDays % 7 + 1) % 7);
 
                 return (hour, minute, elapsedDays, dayOfWeek);
             }
@@ -301,7 +407,11 @@ namespace AbsurdelyBetterDelivery.Services
         /// <summary>
         /// Processes all scheduled recurring orders (OnceADay, OnceAWeek).
         /// </summary>
-        private static void ProcessRecurringOrders((int hour, int minute, int day, DayOfWeek dayOfWeek) gameTime)
+        /// <param name="gameTime">Current game time.</param>
+        /// <param name="prevTime">Game time at the previous tick. Used for range-based missed-minute detection.</param>
+        private static void ProcessRecurringOrders(
+            (int hour, int minute, int day, DayOfWeek dayOfWeek) gameTime,
+            (int hour, int minute) prevTime)
         {
             var recurringRecords = DeliveryHistoryManager.History
                 .Where(r => r.IsRecurring && r.RecurringSettings != null)
@@ -313,8 +423,8 @@ namespace AbsurdelyBetterDelivery.Services
             {
                 var settings = record.RecurringSettings!;
 
-                // Check if it's the right time
-                if (!IsTimeToOrder(settings, gameTime))
+                // Range-based time check: catches minutes skipped at high game speed.
+                if (!IsTimeToOrder(settings, gameTime, prevTime))
                     continue;
 
                 // Check if already ordered today/this week
@@ -327,15 +437,36 @@ namespace AbsurdelyBetterDelivery.Services
         }
 
         /// <summary>
-        /// Checks if the current game time matches the scheduled order time.
+        /// Checks if the scheduled order time was reached between the previous and current tick.
+        /// Uses a range-based check so that minutes skipped at high game speed are not missed.
+        /// Falls back to exact-match on the very first tick of a session (prevTime.hour == -1)
+        /// so we don't retroactively fire orders for times that passed before session start.
         /// </summary>
-        private static bool IsTimeToOrder(RecurringSettings settings, (int hour, int minute, int day, DayOfWeek dayOfWeek) gameTime)
+        private static bool IsTimeToOrder(
+            RecurringSettings settings,
+            (int hour, int minute, int day, DayOfWeek dayOfWeek) gameTime,
+            (int hour, int minute) prevTime)
         {
-            // Check hour and minute (within a 1-minute window)
-            if (gameTime.hour != settings.Hour || gameTime.minute != settings.Minute)
+            bool timeMatches;
+            if (prevTime.hour == -1)
+            {
+                // First tick of the session: exact match only.
+                timeMatches = gameTime.hour == settings.Hour && gameTime.minute == settings.Minute;
+            }
+            else
+            {
+                // Range check: true if the scheduled minute falls in the half-open interval
+                // (prevTime, currentTime], handling midnight rollover.
+                timeMatches = IsMinuteBetween(
+                    settings.Hour, settings.Minute,
+                    prevTime,
+                    (gameTime.hour, gameTime.minute));
+            }
+
+            if (!timeMatches)
                 return false;
 
-            // For weekly orders, also check day of week
+            // For weekly orders, also check day of week.
             if (settings.Type == RecurringType.OnceAWeek)
             {
                 if (gameTime.dayOfWeek != settings.DayOfWeek)
@@ -346,23 +477,66 @@ namespace AbsurdelyBetterDelivery.Services
         }
 
         /// <summary>
+        /// Returns true if the scheduled (hour, minute) falls within the half-open interval
+        /// (from, to], handling midnight rollover correctly.
+        /// Used by <see cref="IsTimeToOrder"/> to detect game-time ticks skipped at high speed.
+        /// </summary>
+        private static bool IsMinuteBetween(
+            int scheduledHour, int scheduledMinute,
+            (int hour, int minute) from,
+            (int hour, int minute) to)
+        {
+            int scheduled = scheduledHour * 60 + scheduledMinute;
+            int fromTotal = from.hour * 60 + from.minute;
+            int toTotal   = to.hour   * 60 + to.minute;
+
+            if (fromTotal < toTotal)
+            {
+                // Normal forward progression within the same day-segment.
+                return scheduled > fromTotal && scheduled <= toTotal;
+            }
+            else if (fromTotal > toTotal)
+            {
+                // Day rollover (e.g. 23:59 → 0:01): range wraps around midnight.
+                return scheduled > fromTotal || scheduled <= toTotal;
+            }
+            else
+            {
+                // from == to: clock hasn't moved (degenerate guard).
+                return scheduled == toTotal;
+            }
+        }
+
+        /// <summary>
         /// Checks if the order was already placed recently (prevents duplicates).
+        /// Prefers a game-day based check so the cooldown is unaffected by real-world
+        /// time or game-speed multiplier. Falls back to the legacy wall-clock check for
+        /// records saved before <see cref="RecurringSettings.LastExecutedGameDay"/> was added.
         /// </summary>
         private static bool HasOrderedRecently(DeliveryRecord record, RecurringSettings settings)
         {
-            // Check LastExecuted in settings
-            if (settings.LastExecuted.HasValue)
+            var gameTime = GetCurrentGameTime();
+
+            if (gameTime.HasValue && settings.LastExecutedGameDay.HasValue)
             {
+                // Game-day based cooldown: independent of real time and speed multiplier.
+                int daysSince = gameTime.Value.day - settings.LastExecutedGameDay.Value;
+                if (settings.Type == RecurringType.OnceADay && daysSince < 1)
+                    return true;
+                if (settings.Type == RecurringType.OnceAWeek && daysSince < 7)
+                    return true;
+            }
+            else if (settings.LastExecuted.HasValue)
+            {
+                // Legacy fallback for records persisted before LastExecutedGameDay was introduced.
                 var timeSince = DateTime.Now - settings.LastExecuted.Value;
-                
                 if (settings.Type == RecurringType.OnceADay && timeSince.TotalHours < 20)
                     return true;
-                    
                 if (settings.Type == RecurringType.OnceAWeek && timeSince.TotalDays < 6)
                     return true;
             }
 
-            // Also check cooldown dictionary
+            // In-session guard: prevents rapid duplicate triggers within the same session.
             if (_orderCooldowns.TryGetValue(record.ID, out var lastOrder))
             {
                 if (DateTime.Now - lastOrder < CooldownDuration)
@@ -641,10 +815,16 @@ namespace AbsurdelyBetterDelivery.Services
                 {
                     AbsurdelyBetterDeliveryMod.DebugLog($"[RecurringOrders] ✓ Order placed successfully for {record.StoreName}");
 
-                    // Update last executed time
                     if (record.RecurringSettings != null)
                     {
+                        // Track both wall-clock time (legacy compat) and in-game day.
+                        // The game-day value is preferred by HasOrderedRecently() so the cooldown
+                        // remains correct regardless of game-speed multiplier.
                         record.RecurringSettings.LastExecuted = DateTime.Now;
+                        record.RecurringSettings.LastExecutedGameDay = GetCurrentGameTime()?.day;
+
+                        // Persist immediately so the cooldown survives a game restart.
+                        SaveRecurringOrders();
                         DeliveryHistoryManager.SaveHistory();
                     }
 

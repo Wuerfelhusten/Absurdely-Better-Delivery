@@ -39,5 +39,12 @@ namespace AbsurdelyBetterDelivery.Models
         /// Used to prevent duplicate orders.
         /// </summary>
         public DateTime? LastExecuted { get; set; }
+
+        /// <summary>
+        /// The in-game day (<see cref="Il2CppScheduleOne.GameTime.TimeManager.ElapsedDays"/>) on
+        /// which the order was last executed. Preferred over <see cref="LastExecuted"/> because it
+        /// is independent of real-world time and game speed.
+        /// </summary>
+        public int? LastExecutedGameDay { get; set; }
     }
 }

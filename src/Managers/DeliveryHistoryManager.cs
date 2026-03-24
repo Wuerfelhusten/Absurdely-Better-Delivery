@@ -113,12 +113,20 @@ namespace AbsurdelyBetterDelivery.Managers
                     List<DeliveryRecord> baseline = DeserializeHistory(backupJson);
                     History = baseline;
                     SaveHistory();
+
+                    // Keep recurring orders in sync: roll back RecurringOrders_*.json so that
+                    // record IDs in that file match the restored history baseline.
+                    // Without this, records created during the unsaved session would leave
+                    // orphaned IDs that LoadRecurringOrders() silently discards next session.
+                    RecurringOrderService.RollbackSessionOrders();
+
                     MelonLogger.Msg($"[History] Session ended without a game save — rolled back to session-start baseline ({baseline.Count} entries) for save '{_currentSaveName}'.");
                 }
                 else
                 {
                     // Game was saved; current history is already up-to-date on disk.
                     SaveHistory();
+                    RecurringOrderService.CommitSessionOrders();
                 }
 
                 if (File.Exists(SessionBackupPath))
@@ -143,9 +151,12 @@ namespace AbsurdelyBetterDelivery.Managers
         public static void OnGameSaved()
         {
             _gameSavedThisSession = true;
-            // Update the session backup to the newly-saved state so that a subsequent
+            // Update the history session backup to the newly-saved state so that a subsequent
             // crash would recover to the most recent game-save point, not the session start.
             CreateSessionBackupSnapshot();
+            // Persist any in-memory recurring-order state changes (especially LastExecutedGameDay)
+            // and refresh the recurring orders session backup to match this saved baseline.
+            RecurringOrderService.OnGameSaved();
             MelonLogger.Msg($"[History] Game saved — session checkpoint updated ({History.Count} entries) for save '{_currentSaveName}'.");
         }
 
